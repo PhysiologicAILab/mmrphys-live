@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vital Signs Monitor</title>
+    <link rel="stylesheet" href="./styles/main.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Vital Signs Monitor</h1>
+            <div class="controls">
+                <button id="startButton">Start Capture</button>
+                <button id="stopButton" disabled>Stop Capture</button>
+                <button id="exportButton" disabled>Export Data</button>
+            </div>
+        </header>
+
+        <main>
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="videoElement" autoplay></video>
+                    <canvas id="faceCanvas"></canvas>
+                </div>
+
+                <div class="oval-frame">
+                    <canvas id="croppedFace"></canvas>
+                </div>
+            </div>
+
+            <div class="charts-section">
+                <div class="chart-container">
+                    <canvas id="bvpChart"></canvas>
+                    <div id="heartRate" class="metric"></div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="respChart"></canvas>
+                    <div id="respRate" class="metric"></div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <div id="status" class="status-message"></div>
+        </footer>
+    </div>
+
+    <script type="module" src="./js/app.js"></script>
+</body>
+
+</html>

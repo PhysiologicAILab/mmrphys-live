@@ -1,0 +1,33 @@
+{
+  "name": "vital-signs-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "download-models": "node ./scripts/download-models.js"
+  },
+  "dependencies": {
+    "18": "0.0.0",
+    "chart.js": "^4.4.7",
+    "face-api.js": "^0.20.0",
+    "onnxruntime-web": "^1.20.1"
+  },
+  "devDependencies": {
+    "vite": "^6.1.0"
+  },
+  "description": "Real Time Remote Physiological Sensing",
+  "main": "vite.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jnj256/mmrphys.github.io.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jnj256/mmrphys.github.io/issues"
+  },
+  "homepage": "https://github.com/jnj256/mmrphys.github.io#readme"
+}

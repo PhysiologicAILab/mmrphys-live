@@ -1,0 +1,164 @@
+:root {
+    --primary-color: #2c3e50;
+    --secondary-color: #34495e;
+    --accent-color: #3498db;
+    --success-color: #2ecc71;
+    --error-color: #e74c3c;
+    --text-color: #2c3e50;
+    --background-color: #ecf0f1;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+        Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    background-color: var(--background-color);
+    color: var(--text-color);
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+h1 {
+    margin-bottom: 1rem;
+}
+
+.controls {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-bottom: 1rem;
+}
+
+button {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 4px;
+    background-color: var(--accent-color);
+    color: white;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+button:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.video-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.video-container {
+    position: relative;
+    width: 640px;
+    height: 480px;
+    background-color: #000;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+#videoElement {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#faceCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.oval-frame {
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 3px solid var(--accent-color);
+}
+
+#croppedFace {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.charts-section {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    margin-bottom: 2rem;
+}
+
+.chart-container {
+    background-color: white;
+    padding: 1rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.metric {
+    text-align: center;
+    margin-top: 1rem;
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: var(--accent-color);
+}
+
+.status-message {
+    text-align: center;
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin-top: 1rem;
+}
+
+.status-message.error {
+    background-color: var(--error-color);
+    color: white;
+}
+
+.status-message.success {
+    background-color: var(--success-color);
+    color: white;
+}
+
+@media (max-width: 768px) {
+    .video-container {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 4/3;
+    }
+
+    .oval-frame {
+        width: 150px;
+        height: 150px;
+    }
+
+    .charts-section {
+        grid-template-columns: 1fr;
+    }
+}
