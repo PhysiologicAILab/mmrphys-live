@@ -1,3 +1,5 @@
+import { ModelConfig } from './modelInference';
+
 export interface SignalBuffers {
     bvp: Float32Array;
     resp: Float32Array;
@@ -25,6 +27,7 @@ export class SignalProcessor {
     private lastUpdateTime: number;
     private updateCount: number;
     private averageUpdateTime: number;
+    private config: ModelConfig | null;
 
     constructor() {
         this.maxSignalBufferSize = 900; // 30 seconds at 30fps
@@ -44,6 +47,11 @@ export class SignalProcessor {
         this.lastUpdateTime = Date.now();
         this.updateCount = 0;
         this.averageUpdateTime = 0;
+        this.config = null;
+    }
+
+    setConfig(config: ModelConfig): void {
+        this.config = config;
     }
 
     updateBuffers(results: {
@@ -131,8 +139,9 @@ export class SignalProcessor {
         try {
             const { bvpData, respData } = this.getAlignedSignalData();
             const rates = this.getAlignedRateData();
+            const samplingRate = this.config?.sampling_rate ?? 30;
 
-            const headers = ['Timestamp', 'BVP', 'Respiratory', 'Heart Rate', 'Respiratory Rate'];
+            const headers = ['Timestamp', 'BVP', 'Respiratory', 'Heart Rate', 'Respiratory Rate', 'Sampling Rate'];
             const rows = [headers.join(',')];
 
             for (let i = 0; i < this.timestamps.length; i++) {
@@ -141,7 +150,8 @@ export class SignalProcessor {
                     this.formatValue(bvpData[i], 6),
                     this.formatValue(respData[i], 6),
                     this.formatValue(rates.heartRate[i], 2),
-                    this.formatValue(rates.respRate[i], 2)
+                    this.formatValue(rates.respRate[i], 2),
+                    samplingRate
                 ];
                 rows.push(row.join(','));
             }
@@ -191,10 +201,29 @@ export class SignalProcessor {
     getPerformanceMetrics(): {
         averageUpdateTime: number;
         updateCount: number;
+        bufferUtilization: number;
     } {
         return {
             averageUpdateTime: this.averageUpdateTime,
-            updateCount: this.updateCount
+            updateCount: this.updateCount,
+            bufferUtilization: (this.bvpBufferIndex / this.maxSignalBufferSize) * 100
         };
+    }
+
+    getConfig(): ModelConfig | null {
+        return this.config;
+    }
+
+    reset(): void {
+        this.bvpBuffer.fill(0);
+        this.respBuffer.fill(0);
+        this.bvpBufferIndex = 0;
+        this.respBufferIndex = 0;
+        this.rateBuffer.heartRate = [];
+        this.rateBuffer.respRate = [];
+        this.timestamps = [];
+        this.updateCount = 0;
+        this.averageUpdateTime = 0;
+        this.lastUpdateTime = Date.now();
     }
 }

@@ -1,3 +1,4 @@
+import * as ort from 'onnxruntime-web';
 import { VitalSignsModel, InferenceResult } from '../utils/modelInference';
 
 interface WorkerMessage {
@@ -22,6 +23,7 @@ interface PerformanceStats {
     errorCount: number;
 }
 
+
 class InferenceWorker {
     private model: VitalSignsModel | null = null;
     private isProcessing: boolean = false;
@@ -37,20 +39,83 @@ class InferenceWorker {
     };
 
     constructor() {
-        this.initialize();
+        // Don't initialize in constructor
+        this.initializeAsync();
     }
 
-    private async initialize(): Promise<void> {
+    private async initializeAsync(): Promise<void> {
         try {
+            console.log('Initializing inference worker...');
+
+            // Initialize ONNX Runtime environment first
+            await this.configureOrtEnvironment();
+
+            // Then initialize the model
             this.model = new VitalSignsModel();
             await this.model.initialize();
+
             this.sendMessage('init', 'success');
+            console.log('Inference worker initialized successfully');
         } catch (error) {
+            console.error('Inference worker initialization error:', error);
             this.handleError('init', error);
         }
     }
 
+    private async configureOrtEnvironment(): Promise<void> {
+        try {
+            // Ensure ort.env is available
+            if (!ort.env) {
+                throw new Error('ONNX Runtime environment not available');
+            }
+
+            // Configure WASM paths
+            ort.env.wasm.wasmPaths = {
+                'ort-wasm.wasm': '/ort/ort-wasm.wasm',
+                'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
+                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm'
+            };
+
+            // Configure threading and SIMD
+            ort.env.wasm.numThreads = 1;
+            ort.env.wasm.simd = true;
+
+            console.log('ONNX Runtime environment configured successfully');
+        } catch (error) {
+            console.error('Failed to configure ONNX Runtime environment:', error);
+            throw error;
+        }
+    }
+
+    private sendMessage(type: string, status: 'success' | 'error', data?: any, error?: Error): void {
+        const message: WorkerResponse = {
+            type,
+            status,
+            performanceStats: this.performanceStats
+        };
+
+        if (data) message.results = data;
+        if (error) message.error = error.message;
+
+        self.postMessage(message);
+    }
+
+    private handleError(type: string, error: unknown): void {
+        console.error(`Worker error (${type}):`, error);
+        this.performanceStats.errorCount++;
+        this.sendMessage(
+            type,
+            'error',
+            null,
+            error instanceof Error ? error : new Error(String(error))
+        );
+    }
+
     private async processInference(frameBuffer: ImageData[]): Promise<InferenceResult> {
+        if (!this.model) {
+            throw new Error('Model not initialized');
+        }
+
         if (!frameBuffer || frameBuffer.length < 90) {
             throw new Error('Insufficient frames for inference');
         }
@@ -58,7 +123,7 @@ class InferenceWorker {
         const startTime = performance.now();
 
         try {
-            const results = await this.model!.inference(frameBuffer);
+            const results = await this.model.inference(frameBuffer);
             this.updatePerformanceStats(performance.now() - startTime);
             return results;
         } catch (error) {
@@ -74,26 +139,6 @@ class InferenceWorker {
             (this.performanceStats.averageProcessingTime *
                 (this.performanceStats.totalInferences - 1) +
                 processingTime) / this.performanceStats.totalInferences;
-    }
-
-    private sendMessage(type: string, status: 'success' | 'error', data?: any, error?: Error): void {
-        const message: WorkerResponse = {
-            type,
-            status,
-            timestamp: Date.now(),
-            performanceStats: this.performanceStats
-        };
-
-        if (data) message.results = data;
-        if (error) message.error = error.message;
-
-        self.postMessage(message);
-    }
-
-    private handleError(type: string, error: unknown): void {
-        console.error(`Worker error (${type}):`, error);
-        this.performanceStats.errorCount++;
-        this.sendMessage(type, 'error', null, error instanceof Error ? error : new Error(String(error)));
     }
 
     private async processQueue(): Promise<void> {

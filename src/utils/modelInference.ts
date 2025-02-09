@@ -4,6 +4,23 @@ export interface ModelConfig {
     sampling_rate: number;
     input_size: number[];
     output_names: string[];
+    model_info: {
+        name: string;
+        version: string;
+        description: string;
+    };
+    signal_parameters: {
+        bvp: {
+            min_rate: number;
+            max_rate: number;
+            buffer_size: number;
+        };
+        resp: {
+            min_rate: number;
+            max_rate: number;
+            buffer_size: number;
+        };
+    };
 }
 
 export interface InferenceResult {
@@ -19,23 +36,83 @@ export class VitalSignsModel {
     private inputName: string;
     private config: ModelConfig | null;
     private isInitialized: boolean;
-    private readonly modelOptions: ort.SessionOptions;
+    private readonly modelOptions: ort.InferenceSession.SessionOptions;
 
     constructor() {
         this.session = null;
         this.inputName = '';
         this.config = null;
         this.isInitialized = false;
+
+        // Configure ONNX Runtime session options
         this.modelOptions = {
             executionProviders: ['wasm'],
-            graphOptimizationLevel: 'all'
+            graphOptimizationLevel: 'all',
+            enableCpuMemArena: true,
+            enableMemPattern: true,
+            executionMode: 'sequential',
+            useWebGPU: false
         };
+    }
+
+    private validateConfig(config: any): config is ModelConfig {
+        if (!config) return false;
+
+        // Check required top-level fields
+        if (typeof config.sampling_rate !== 'number' ||
+            !Array.isArray(config.input_size) ||
+            !Array.isArray(config.output_names) ||
+            !config.model_info ||
+            !config.signal_parameters) {
+            console.error('Missing required top-level config fields');
+            return false;
+        }
+
+        // Validate input_size array
+        if (config.input_size.length !== 5 ||
+            !config.input_size.every((dim: any) => typeof dim === 'number')) {
+            console.error('Invalid input_size configuration');
+            return false;
+        }
+
+        // Validate output_names
+        if (!config.output_names.includes('rPPG') ||
+            !config.output_names.includes('rRSP')) {
+            console.error('Missing required output names');
+            return false;
+        }
+
+        // Validate signal parameters
+        const validateSignalParams = (params: any) => {
+            return params &&
+                typeof params.min_rate === 'number' &&
+                typeof params.max_rate === 'number' &&
+                typeof params.buffer_size === 'number';
+        };
+
+        if (!validateSignalParams(config.signal_parameters.bvp) ||
+            !validateSignalParams(config.signal_parameters.resp)) {
+            console.error('Invalid signal parameters configuration');
+            return false;
+        }
+
+        return true;
     }
 
     async initialize(): Promise<void> {
         try {
+            // Ensure WebAssembly support
+            if (!this.checkWebAssemblySupport()) {
+                throw new Error('WebAssembly is not supported in this browser');
+            }
+
+            // Initialize ONNX Runtime first
+            await this.initializeOrtRuntime();
+
+            // Then load config and model
             await this.loadConfig();
             await this.initializeSession();
+
             this.isInitialized = true;
         } catch (error) {
             console.error('Model initialization error:', error);
@@ -43,43 +120,107 @@ export class VitalSignsModel {
         }
     }
 
+    private async initializeOrtRuntime(): Promise<void> {
+        try {
+            // Ensure ort.env is properly initialized
+            if (!ort.env) {
+                throw new Error('ONNX Runtime environment not available');
+            }
+
+            // Configure WASM path
+            ort.env.wasm.wasmPaths = {
+                'ort-wasm.wasm': '/ort/ort-wasm.wasm',
+                'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
+                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm'
+            };
+
+            // Set other environment configurations
+            ort.env.wasm.numThreads = 1;
+            ort.env.wasm.simd = true;
+
+            console.log('ONNX Runtime environment initialized');
+        } catch (error) {
+            console.error('ONNX Runtime initialization error:', error);
+            throw error;
+        }
+    }
+
+
     private async loadConfig(): Promise<void> {
         try {
-            const configResponse = await fetch('/models/rphys/config.json');
+            console.log('Loading model configuration...');
+            const configResponse = await fetch('/models/rphys/config.json', {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            });
+
             if (!configResponse.ok) {
                 throw new Error(`Config load failed: ${configResponse.statusText}`);
             }
-            this.config = await configResponse.json();
+
+            const configData = await configResponse.json();
+
+            if (!this.validateConfig(configData)) {
+                throw new Error('Invalid configuration format');
+            }
+
+            this.config = configData;
+            console.log('Model configuration loaded successfully');
         } catch (error) {
+            console.error('Config loading error:', error);
             throw new Error(`Failed to load model config: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 
     private async initializeSession(): Promise<void> {
         try {
-            if (!this.checkWebAssemblySupport()) {
-                throw new Error('WebAssembly is not supported in this browser');
+            console.log('Loading ONNX model...');
+            const modelResponse = await fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            });
+
+            if (!modelResponse.ok) {
+                throw new Error(`Failed to load ONNX model: ${modelResponse.statusText}`);
             }
 
-            this.session = await ort.InferenceSession.create(
-                '/models/rphys/SCAMPS_Multi_9x9.onnx',
-                this.modelOptions
-            );
+            const modelData = await modelResponse.arrayBuffer();
 
-            // Store input name for later use
+            // Create session with explicit error handling
+            console.log('Creating ONNX session...');
+            try {
+                this.session = await ort.InferenceSession.create(
+                    modelData,
+                    this.modelOptions
+                );
+            } catch (sessionError) {
+                console.error('Session creation error:', sessionError);
+                throw new Error('Failed to create ONNX session');
+            }
+
+            if (!this.session) {
+                throw new Error('Session creation failed');
+            }
+
             this.inputName = this.session.inputNames[0];
+            console.log('ONNX session created successfully');
 
             await this.warmupModel();
         } catch (error) {
-            throw new Error(`Session initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            console.error('Session initialization error:', error);
+            throw error;
         }
     }
 
     private checkWebAssemblySupport(): boolean {
         try {
-            if (typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function') {
-                const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-                return module instanceof WebAssembly.Module;
+            if (typeof WebAssembly === 'object' &&
+                typeof WebAssembly.instantiate === 'function') {
+                const module = new WebAssembly.Module(
+                    new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])
+                );
+                const instance = new WebAssembly.Instance(module, {});
+                return instance instanceof WebAssembly.Instance;
             }
         } catch (error) {
             return false;
@@ -88,13 +229,17 @@ export class VitalSignsModel {
     }
 
     private async warmupModel(): Promise<void> {
+        if (!this.session || !this.inputName) {
+            throw new Error('Session not properly initialized');
+        }
+
         const dummyInput = new Float32Array(1 * 90 * 3 * 9 * 9).fill(0);
         const tensorDims = [1, 90, 3, 9, 9];
         const input = new ort.Tensor('float32', dummyInput, tensorDims);
         const feeds: Record<string, ort.Tensor> = {};
         feeds[this.inputName] = input;
 
-        await this.session!.run(feeds);
+        await this.session.run(feeds);
     }
 
     preprocessFrames(frameBuffer: ImageData[]): Float32Array {
@@ -140,7 +285,7 @@ export class VitalSignsModel {
     }
 
     async inference(frameBuffer: ImageData[]): Promise<InferenceResult> {
-        if (!this.isInitialized || !this.session) {
+        if (!this.isInitialized || !this.session || !this.inputName) {
             throw new Error('Model not initialized');
         }
 
@@ -156,8 +301,8 @@ export class VitalSignsModel {
 
             const results = await this.session.run(feeds);
 
-            const bvpSignal = Array.from(results['bvp_signal'].data as Float32Array);
-            const respSignal = Array.from(results['resp_signal'].data as Float32Array);
+            const bvpSignal = Array.from(results['rPPG'].data as Float32Array);
+            const respSignal = Array.from(results['rRSP'].data as Float32Array);
 
             const heartRate = this.calculateRate(bvpSignal, 'heart');
             const respRate = this.calculateRate(respSignal, 'resp');
@@ -179,7 +324,11 @@ export class VitalSignsModel {
 
     private calculateRate(signal: number[], type: 'heart' | 'resp'): number {
         try {
-            const samplingRate = this.config?.sampling_rate ?? 30;
+            if (!this.config) {
+                throw new Error('Model configuration not loaded');
+            }
+
+            const samplingRate = this.config.sampling_rate;
             const peaks = this.findPeaks(signal);
 
             if (peaks.length < 2) {
@@ -220,6 +369,10 @@ export class VitalSignsModel {
         const mad = this.calculateMedian(intervals.map(x => Math.abs(x - median)));
 
         const validIntervals = intervals.filter(x => Math.abs(x - median) < mad * 2.5);
+
+        if (validIntervals.length === 0) {
+            throw new Error('No valid intervals found after outlier removal');
+        }
 
         return validIntervals.reduce((a, b) => a + b, 0) / validIntervals.length;
     }

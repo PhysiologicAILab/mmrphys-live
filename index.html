@@ -6,15 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="description" content="Real-time vital signs monitoring using computer vision">
     <meta name="theme-color" content="#2c3e50">
-    <title>Vital Signs Monitor</title>
+    <title>Camera-based Contactless Sensing of Physiological Signals</title>
     <link rel="stylesheet" href="/src/styles/main.css">
 
-    <!-- Preload critical resources with correct as attribute -->
+    <!-- Preload critical resources with correct attributes -->
     <link rel="preload" href="/models/face-api/tiny_face_detector_model-weights_manifest.json" as="fetch"
-        type="application/json" crossorigin>
-    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin>
+        type="application/json" crossorigin="anonymous">
+    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin="anonymous">
     <link rel="preload" href="/models/rphys/SCAMPS_Multi_9x9.onnx" as="fetch" type="application/octet-stream"
-        crossorigin>
+        crossorigin="anonymous">
 
     <!-- Add iOS meta tags and icons -->
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -34,6 +34,30 @@
                 'Please use a modern browser like Chrome, Firefox, or Safari.' +
                 '</div>';
         }
+    </script>
+
+    <!-- Immediate resource initialization -->
+    <script>
+        // Immediately start loading resources after page load
+        window.addEventListener('load', () => {
+            Promise.all([
+                fetch('/models/rphys/config.json', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                }),
+                fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                }),
+                fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                })
+            ]).catch(error => {
+                console.warn('Resource pre-loading encountered an error:', error);
+                // Main app will handle proper error display
+            });
+        });
     </script>
 
     <!-- Load application -->

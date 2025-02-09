@@ -1,80 +1,31 @@
 {
+    "sampling_rate": 30,
+    "input_size": [
+        1,
+        90,
+        3,
+        9,
+        9
+    ],
+    "output_names": [
+        "rPPG",
+        "rRSP"
+    ],
     "model_info": {
-        "name": "SCAMPS_Multi",
+        "name": "SCAMPS_Multi_9x9",
         "version": "1.0",
-        "description": "Multi-task model for rPPG-based vital signs estimation"
+        "description": "Remote physiological sensing model for BVP and respiratory signal estimation"
     },
-    "input_config": {
-        "frame_size": [
-            9,
-            9
-        ],
-        "channels": 3,
-        "min_sequence_length": 90,
-        "max_sequence_length": 300,
-        "color_space": "RGB",
-        "normalize": true,
-        "pixel_range": [
-            0,
-            1
-        ]
-    },
-    "output_config": {
-        "signals": [
-            "bvp_signal",
-            "resp_signal"
-        ],
-        "metrics": [
-            "heart_rate",
-            "resp_rate"
-        ]
-    },
-    "processing_params": {
-        "sampling_rate": 30,
-        "inference_interval": 2000,
-        "buffer_length": 300,
-        "moving_window": 90
-    },
-    "physiological_limits": {
-        "heart_rate": {
-            "min": 40,
-            "max": 180,
-            "default": 75
+    "signal_parameters": {
+        "bvp": {
+            "min_rate": 40,
+            "max_rate": 180,
+            "buffer_size": 300
         },
-        "resp_rate": {
-            "min": 8,
-            "max": 30,
-            "default": 15
+        "resp": {
+            "min_rate": 8,
+            "max_rate": 30,
+            "buffer_size": 300
         }
-    },
-    "signal_processing": {
-        "filtering": {
-            "bvp": {
-                "low_cutoff": 0.7,
-                "high_cutoff": 4.0,
-                "order": 3
-            },
-            "resp": {
-                "low_cutoff": 0.1,
-                "high_cutoff": 0.5,
-                "order": 3
-            }
-        },
-        "peak_detection": {
-            "min_peak_distance": {
-                "bvp": 0.25,
-                "resp": 2.0
-            },
-            "outlier_rejection": {
-                "mad_threshold": 2.5,
-                "window_size": 5
-            }
-        }
-    },
-    "performance_settings": {
-        "batch_size": 1,
-        "use_threading": true,
-        "num_threads": 4,
-        "memory_limit": 512
     }
 }

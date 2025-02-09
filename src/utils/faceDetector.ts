@@ -14,6 +14,7 @@ export class FaceDetector {
     private lastDetectionTime: number;
     private readonly detectionThrottleMs: number;
     private initializationPromise: Promise<void> | null;
+    private net: faceapi.TinyFaceDetector | null;
 
     constructor() {
         this.currentFaceBox = null;
@@ -22,6 +23,7 @@ export class FaceDetector {
         this.lastDetectionTime = 0;
         this.detectionThrottleMs = 1000;
         this.initializationPromise = null;
+        this.net = null;
     }
 
     async initialize(): Promise<void> {
@@ -31,24 +33,31 @@ export class FaceDetector {
 
         this.initializationPromise = (async () => {
             try {
-                if (document.readyState !== 'complete') {
-                    await new Promise(resolve => window.addEventListener('load', resolve));
+                // Set up environment
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    throw new Error('Could not get canvas context');
                 }
 
-                const modelPath = './models/face-api';
-                await this.verifyModelFiles(modelPath);
-                await faceapi.nets.tinyFaceDetector.load(modelPath);
+                // Initialize face-api environment
+                await this.setupFaceAPI();
 
-                if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-                    throw new Error('Model failed to load correctly');
-                }
+                // Initialize the tiny face detector model
+                this.net = new faceapi.TinyFaceDetector({
+                    inputSize: 224,
+                    scoreThreshold: 0.5
+                });
+
+                // Load model weights
+                await this.loadModelWeights();
 
                 this.isInitialized = true;
                 console.log('Face detection model loaded successfully');
             } catch (error) {
                 this.isInitialized = false;
                 this.initializationPromise = null;
-                console.error('Error loading face detection model:', error);
+                console.error('Face detector initialization error:', error);
                 throw error;
             }
         })();
@@ -56,30 +65,50 @@ export class FaceDetector {
         return this.initializationPromise;
     }
 
-    private async verifyModelFiles(modelPath: string): Promise<void> {
-        const manifestPath = `${modelPath}/tiny_face_detector_model-weights_manifest.json`;
-        const response = await fetch(manifestPath);
+    private async setupFaceAPI(): Promise<void> {
+        // Set up the environment for face-api.js
+        const env = {
+            Canvas: HTMLCanvasElement,
+            Image: HTMLImageElement,
+            ImageData: ImageData,
+            Video: HTMLVideoElement,
+            createCanvasElement: () => document.createElement('canvas'),
+            createImageElement: () => document.createElement('img')
+        };
 
-        if (!response.ok) {
-            throw new Error(`Failed to load manifest: HTTP ${response.status}`);
-        }
+        // @ts-ignore - face-api.js types are not perfect
+        faceapi.env.monkeyPatch(env);
+    }
 
-        const manifestContent = await response.json();
+    private async loadModelWeights(): Promise<void> {
+        try {
+            const modelPath = '/models/face-api';
+            const manifestPath = `${modelPath}/tiny_face_detector_model-weights_manifest.json`;
 
-        if (!manifestContent.weightsManifest || !Array.isArray(manifestContent.weightsManifest)) {
-            throw new Error('Invalid manifest structure');
-        }
+            // Load and validate manifest
+            const manifestResponse = await fetch(manifestPath, {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            });
 
-        const shardPath = `${modelPath}/tiny_face_detector_model-shard1`;
-        const shardResponse = await fetch(shardPath);
+            if (!manifestResponse.ok) {
+                throw new Error(`Failed to load model manifest: ${manifestResponse.statusText}`);
+            }
 
-        if (!shardResponse.ok) {
-            throw new Error('Model weights file not found');
+            // Load the model
+            await faceapi.nets.tinyFaceDetector.load(modelPath);
+
+            // Verify model is loaded
+            if (!faceapi.nets.tinyFaceDetector.isLoaded) {
+                throw new Error('Face detector model failed to load');
+            }
+        } catch (error) {
+            throw new Error(`Model weights loading failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 
     async detectFace(videoElement: HTMLVideoElement): Promise<FaceBox | null> {
-        if (!this.isInitialized) {
+        if (!this.isInitialized || !this.net) {
             throw new Error('Face detector not initialized');
         }
 
@@ -89,13 +118,9 @@ export class FaceDetector {
         }
 
         try {
-            const detection = await faceapi.detectSingleFace(
-                videoElement,
-                new faceapi.TinyFaceDetectorOptions({
-                    inputSize: 224,
-                    scoreThreshold: 0.5
-                })
-            );
+            // Create tensor from video element
+            const input = await faceapi.createCanvasFromMedia(videoElement);
+            const detection = await faceapi.detectSingleFace(input, this.net);
 
             if (detection) {
                 const smoothingFactor = 0.3;
@@ -112,6 +137,7 @@ export class FaceDetector {
                 };
             }
 
+            input.remove();
             this.lastDetectionTime = currentTime;
             return this.currentFaceBox;
         } catch (error) {

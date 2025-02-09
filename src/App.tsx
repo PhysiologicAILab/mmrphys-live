@@ -67,7 +67,6 @@ const App: React.FC = () => {
     // Initialize worker with error handling
     const initializeWorker = useCallback(async () => {
         return new Promise<void>((resolve, reject) => {
-            // Create worker
             componentsRef.current.inferenceWorker = new Worker(
                 new URL('./workers/inferenceWorker.ts', import.meta.url),
                 { type: 'module' }
@@ -105,7 +104,6 @@ const App: React.FC = () => {
     const handleInferenceResults = useCallback((results: any) => {
         if (!results) return;
 
-        // Update vital signs
         setVitalSigns(prev => ({
             ...prev,
             heartRate: results.heartRate || prev.heartRate,
@@ -114,7 +112,6 @@ const App: React.FC = () => {
             respSignal: results.resp || prev.respSignal
         }));
 
-        // If signal processor exists, update its buffers
         if (componentsRef.current.signalProcessor) {
             componentsRef.current.signalProcessor.updateBuffers(results);
         }
@@ -127,10 +124,39 @@ const App: React.FC = () => {
             setStatus({ message: 'Checking device compatibility...', type: 'info' });
             await checkDeviceSupport();
 
-            // Initialize components
+            // Pre-fetch required resources
+            setStatus({ message: 'Loading required resources...', type: 'info' });
+            const configPromise = fetch('/models/rphys/config.json', {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            }).then(res => res.json());
+
+            const modelPromise = fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            });
+
+            const manifestPromise = fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
+                cache: 'force-cache',
+                credentials: 'same-origin'
+            });
+
+            // Initialize components while resources are being fetched
             componentsRef.current.videoProcessor = new VideoProcessor();
             componentsRef.current.faceDetector = new FaceDetector();
             componentsRef.current.signalProcessor = new SignalProcessor();
+
+            // Wait for all resources to be fetched
+            const [config] = await Promise.all([
+                configPromise,
+                modelPromise,
+                manifestPromise
+            ]);
+
+            // Store config for later use
+            if (componentsRef.current.signalProcessor) {
+                componentsRef.current.signalProcessor.setConfig(config);
+            }
 
             // Initialize face detector
             await componentsRef.current.faceDetector.initialize();
@@ -284,28 +310,24 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // Initialize components on mount
+    // Initialize components on mount and cleanup on unmount
     useEffect(() => {
         initializeComponents();
 
-        // Cleanup on unmount
         return () => {
-            // Stop capture
             if (componentsRef.current.animationFrameId) {
                 cancelAnimationFrame(componentsRef.current.animationFrameId);
             }
 
-            // Terminate worker
             if (componentsRef.current.inferenceWorker) {
                 componentsRef.current.inferenceWorker.terminate();
             }
 
-            // Stop capture if still running
             if (isCapturing) {
                 stopCapture();
             }
         };
-    }, [initializeComponents, stopCapture]);
+    }, [initializeComponents, stopCapture, isCapturing]);
 
     return (
         <div className="app-container">
