@@ -6,6 +6,7 @@ import VideoDisplay from './components/VideoDisplay';
 import Controls from './components/Controls';
 import VitalSignsChart from './components/VitalSignsChart';
 import StatusMessage from './components/StatusMessage';
+import type { InferenceResult } from './utils/modelInference';
 
 // Define types for component state and refs
 interface VitalSigns {
@@ -13,11 +14,13 @@ interface VitalSigns {
     respRate: number;
     bvpSignal: number[];
     respSignal: number[];
+    lastUpdateTime?: number;
 }
 
 interface Status {
     message: string;
     type: 'info' | 'success' | 'error';
+    timestamp?: number;
 }
 
 interface ComponentRefs {
@@ -26,7 +29,25 @@ interface ComponentRefs {
     signalProcessor: SignalProcessor | null;
     inferenceWorker: Worker | null;
     animationFrameId: number | null;
+    lastInferenceTime: number;
 }
+
+interface WorkerMessage {
+    type: string;
+    status: 'success' | 'error';
+    results?: InferenceResult;
+    error?: string;
+    performanceStats?: {
+        totalInferences: number;
+        averageProcessingTime: number;
+        lastProcessingTime: number;
+        errorCount: number;
+        timestamp: number;
+    };
+}
+
+const INFERENCE_INTERVAL = 2000; // 2 seconds
+const REQUIRED_FRAMES = 90; // Number of frames needed for inference
 
 const App: React.FC = () => {
     // State management
@@ -34,13 +55,15 @@ const App: React.FC = () => {
     const [isInitialized, setIsInitialized] = useState(false);
     const [status, setStatus] = useState<Status>({
         message: 'Initializing...',
-        type: 'info'
+        type: 'info',
+        timestamp: Date.now()
     });
     const [vitalSigns, setVitalSigns] = useState<VitalSigns>({
         heartRate: 0,
         respRate: 0,
         bvpSignal: [],
-        respSignal: []
+        respSignal: [],
+        lastUpdateTime: Date.now()
     });
 
     // Refs for components that need to persist between renders
@@ -49,59 +72,85 @@ const App: React.FC = () => {
         faceDetector: null,
         signalProcessor: null,
         inferenceWorker: null,
-        animationFrameId: null
+        animationFrameId: null,
+        lastInferenceTime: 0
     });
+
+    // Update status with timestamp
+    const updateStatus = useCallback((message: string, type: Status['type']) => {
+        setStatus({
+            message,
+            type,
+            timestamp: Date.now()
+        });
+    }, []);
 
     // Device compatibility check
     const checkDeviceSupport = useCallback(async () => {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (!navigator.mediaDevices?.getUserMedia) {
             throw new Error('Camera access not supported in this browser');
         }
 
         const devices = await navigator.mediaDevices.enumerateDevices();
-        if (!devices.some(device => device.kind === 'videoinput')) {
+        const hasCamera = devices.some(device => device.kind === 'videoinput');
+
+        if (!hasCamera) {
             throw new Error('No camera detected');
+        }
+
+        // Check for required WebAssembly features
+        if (typeof WebAssembly !== 'object') {
+            throw new Error('WebAssembly not supported in this browser');
+        }
+
+        // Check for SharedArrayBuffer support (needed for ONNX Runtime)
+        if (typeof SharedArrayBuffer !== 'function') {
+            throw new Error('SharedArrayBuffer not supported in this browser');
         }
     }, []);
 
     // Initialize worker with error handling
     const initializeWorker = useCallback(async () => {
         return new Promise<void>((resolve, reject) => {
-            componentsRef.current.inferenceWorker = new Worker(
-                new URL('./workers/inferenceWorker.ts', import.meta.url),
-                { type: 'module' }
-            );
+            try {
+                const worker = new Worker(
+                    new URL('./workers/inferenceWorker.ts', import.meta.url),
+                    { type: 'module' }
+                );
 
-            const timeout = setTimeout(() => {
-                reject(new Error('Worker initialization timeout'));
-            }, 10000);
+                const timeout = setTimeout(() => {
+                    worker.terminate();
+                    reject(new Error('Worker initialization timeout'));
+                }, 10000);
 
-            const worker = componentsRef.current.inferenceWorker;
-
-            if (!worker) {
-                reject(new Error('Failed to create inference worker'));
-                return;
-            }
-
-            worker.onmessage = (e) => {
-                if (e.data.type === 'init') {
+                worker.onerror = (error) => {
                     clearTimeout(timeout);
-                    if (e.data.status === 'success') {
-                        resolve();
-                    } else {
-                        reject(new Error(e.data.error));
-                    }
-                } else if (e.data.type === 'inference' && e.data.status === 'success') {
-                    handleInferenceResults(e.data.results);
-                }
-            };
+                    reject(new Error(`Worker error: ${error.message}`));
+                };
 
-            worker.postMessage({ type: 'init' });
+                worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
+                    if (e.data.type === 'init') {
+                        clearTimeout(timeout);
+                        if (e.data.status === 'success') {
+                            componentsRef.current.inferenceWorker = worker;
+                            resolve();
+                        } else {
+                            reject(new Error(e.data.error || 'Worker initialization failed'));
+                        }
+                    } else if (e.data.type === 'inference' && e.data.status === 'success') {
+                        handleInferenceResults(e.data.results);
+                    }
+                };
+
+                worker.postMessage({ type: 'init' });
+            } catch (error) {
+                reject(error);
+            }
         });
     }, []);
 
     // Handle inference results
-    const handleInferenceResults = useCallback((results: any) => {
+    const handleInferenceResults = useCallback((results: InferenceResult | undefined) => {
         if (!results) return;
 
         setVitalSigns(prev => ({
@@ -109,7 +158,8 @@ const App: React.FC = () => {
             heartRate: results.heartRate || prev.heartRate,
             respRate: results.respRate || prev.respRate,
             bvpSignal: results.bvp || prev.bvpSignal,
-            respSignal: results.resp || prev.respSignal
+            respSignal: results.resp || prev.respSignal,
+            lastUpdateTime: Date.now()
         }));
 
         if (componentsRef.current.signalProcessor) {
@@ -120,207 +170,179 @@ const App: React.FC = () => {
     // Initialization of all components
     const initializeComponents = useCallback(async () => {
         try {
-            // Check device support
-            setStatus({ message: 'Checking device compatibility...', type: 'info' });
+            updateStatus('Checking device compatibility...', 'info');
             await checkDeviceSupport();
 
-            // Pre-fetch required resources
-            setStatus({ message: 'Loading required resources...', type: 'info' });
-            const configPromise = fetch('/models/rphys/config.json', {
-                cache: 'force-cache',
-                credentials: 'same-origin'
-            }).then(res => res.json());
+            updateStatus('Loading required resources...', 'info');
+            const [config] = await Promise.all([
+                fetch('/models/rphys/config.json', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                }).then(res => res.json()),
+                fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                }),
+                fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
+                    cache: 'force-cache',
+                    credentials: 'same-origin'
+                })
+            ]);
 
-            const modelPromise = fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
-                cache: 'force-cache',
-                credentials: 'same-origin'
-            });
-
-            const manifestPromise = fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
-                cache: 'force-cache',
-                credentials: 'same-origin'
-            });
-
-            // Initialize components while resources are being fetched
+            // Initialize components
             componentsRef.current.videoProcessor = new VideoProcessor();
             componentsRef.current.faceDetector = new FaceDetector();
             componentsRef.current.signalProcessor = new SignalProcessor();
 
-            // Wait for all resources to be fetched
-            const [config] = await Promise.all([
-                configPromise,
-                modelPromise,
-                manifestPromise
-            ]);
-
-            // Store config for later use
+            // Configure components
             if (componentsRef.current.signalProcessor) {
                 componentsRef.current.signalProcessor.setConfig(config);
             }
 
-            // Initialize face detector
+            updateStatus('Initializing face detection...', 'info');
             await componentsRef.current.faceDetector.initialize();
 
-            // Initialize worker
+            updateStatus('Initializing inference worker...', 'info');
             await initializeWorker();
 
-            // Mark as initialized
             setIsInitialized(true);
-            setStatus({ message: 'System ready', type: 'success' });
+            updateStatus('System ready', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
-            setStatus({
-                message: `Initialization failed: ${errorMessage}`,
-                type: 'error'
-            });
+            updateStatus(`Initialization failed: ${errorMessage}`, 'error');
             console.error('Initialization error:', error);
         }
-    }, [checkDeviceSupport, initializeWorker]);
+    }, [checkDeviceSupport, initializeWorker, updateStatus]);
 
     // Start video capture
     const startCapture = useCallback(async () => {
         try {
-            if (!componentsRef.current.videoProcessor ||
-                !componentsRef.current.faceDetector) {
+            const { videoProcessor, faceDetector } = componentsRef.current;
+
+            if (!videoProcessor || !faceDetector) {
                 throw new Error('Components not initialized');
             }
 
-            setStatus({ message: 'Starting capture...', type: 'info' });
+            updateStatus('Starting capture...', 'info');
 
-            // Start video capture
-            await componentsRef.current.videoProcessor.startCapture();
+            await videoProcessor.startCapture();
+            await faceDetector.startDetection(videoProcessor.videoElement);
 
-            // Start face detection
-            await componentsRef.current.faceDetector.startDetection(
-                componentsRef.current.videoProcessor.videoElement
-            );
-
-            // Set capturing state and start processing
             setIsCapturing(true);
             processFrames();
-
-            setStatus({ message: 'Capturing started', type: 'success' });
+            updateStatus('Capturing started', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
-            setStatus({
-                message: `Failed to start capture: ${errorMessage}`,
-                type: 'error'
-            });
+            updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
             console.error('Capture start error:', error);
         }
-    }, []);
+    }, [updateStatus]);
 
     // Stop video capture
     const stopCapture = useCallback(async () => {
         try {
-            // Stop animation frame
-            if (componentsRef.current.animationFrameId) {
-                cancelAnimationFrame(componentsRef.current.animationFrameId);
+            const { animationFrameId, videoProcessor, faceDetector } = componentsRef.current;
+
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
                 componentsRef.current.animationFrameId = null;
             }
 
-            // Stop video processor
-            if (componentsRef.current.videoProcessor) {
-                await componentsRef.current.videoProcessor.stopCapture();
+            if (videoProcessor) {
+                await videoProcessor.stopCapture();
             }
 
-            // Stop face detection
-            if (componentsRef.current.faceDetector) {
-                componentsRef.current.faceDetector.stopDetection();
+            if (faceDetector) {
+                faceDetector.stopDetection();
             }
 
-            // Update states
             setIsCapturing(false);
-            setStatus({ message: 'Capture stopped', type: 'success' });
+            updateStatus('Capture stopped', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
-            setStatus({
-                message: `Error stopping capture: ${errorMessage}`,
-                type: 'error'
-            });
+            updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
             console.error('Capture stop error:', error);
         }
-    }, []);
+    }, [updateStatus]);
 
     // Process video frames
     const processFrames = useCallback(() => {
         if (!isCapturing) return;
 
-        const videoProcessor = componentsRef.current.videoProcessor;
-        const faceDetector = componentsRef.current.faceDetector;
-        const inferenceWorker = componentsRef.current.inferenceWorker;
+        const { videoProcessor, faceDetector, inferenceWorker, lastInferenceTime } = componentsRef.current;
 
         if (!videoProcessor || !faceDetector || !inferenceWorker) return;
 
-        // Get current face box
+        const currentTime = Date.now();
         const faceBox = faceDetector.getCurrentFaceBox();
 
         if (faceBox) {
-            // Process frame
             const processedFrame = videoProcessor.processFrame(faceBox);
 
             if (processedFrame) {
                 videoProcessor.updateFrameBuffer(processedFrame);
             }
 
-            // Run inference every 2 seconds if we have enough frames
+            // Run inference if enough time has passed and we have enough frames
             const frameBuffer = videoProcessor.getFrameBuffer();
-            if (frameBuffer.length >= 90) {
+            if (frameBuffer.length >= REQUIRED_FRAMES &&
+                currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
+
                 inferenceWorker.postMessage({
                     type: 'inference',
                     data: { frameBuffer }
                 });
+
+                componentsRef.current.lastInferenceTime = currentTime;
             }
         }
 
-        // Schedule next frame processing
         componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
     }, [isCapturing]);
 
     // Export collected data
     const exportData = useCallback(() => {
         try {
-            if (!componentsRef.current.signalProcessor) {
+            const { signalProcessor } = componentsRef.current;
+
+            if (!signalProcessor) {
                 throw new Error('Signal processor not initialized');
             }
 
-            // Get export data
-            const data = componentsRef.current.signalProcessor.getExportData();
-
-            // Create and trigger download
+            const data = signalProcessor.getExportData();
             const blob = new Blob([data], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
+            const filename = `vital_signs_${new Date().toISOString()}.csv`;
 
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `vital_signs_${new Date().toISOString()}.csv`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
             URL.revokeObjectURL(url);
 
-            setStatus({ message: 'Data exported successfully', type: 'success' });
+            updateStatus('Data exported successfully', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown export error';
-            setStatus({
-                message: `Export failed: ${errorMessage}`,
-                type: 'error'
-            });
+            updateStatus(`Export failed: ${errorMessage}`, 'error');
             console.error('Data export error:', error);
         }
-    }, []);
+    }, [updateStatus]);
 
     // Initialize components on mount and cleanup on unmount
     useEffect(() => {
         initializeComponents();
 
         return () => {
-            if (componentsRef.current.animationFrameId) {
-                cancelAnimationFrame(componentsRef.current.animationFrameId);
+            const { animationFrameId, inferenceWorker } = componentsRef.current;
+
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
             }
 
-            if (componentsRef.current.inferenceWorker) {
-                componentsRef.current.inferenceWorker.terminate();
+            if (inferenceWorker) {
+                inferenceWorker.terminate();
             }
 
             if (isCapturing) {

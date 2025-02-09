@@ -1,56 +1,32 @@
 const fs = require('fs');
 const path = require('path');
 
-function setupOnnxRuntime() {
-    const ortPath = path.resolve('./node_modules/onnxruntime-web/dist');
-    const publicPath = path.resolve('./public');
-    const ortPublicPath = path.join(publicPath, 'ort');
+// Configuration
+const ORT_VERSION = '1.14.0';
+const WASM_FILES = [
+    'ort-wasm.wasm',
+    'ort-wasm-simd.wasm',
+    'ort-wasm-threaded.wasm'
+];
 
-    // Create public/ort directory if it doesn't exist
-    if (!fs.existsSync(ortPublicPath)) {
-        fs.mkdirSync(ortPublicPath, { recursive: true });
+// Paths
+const ORT_PATH = path.join(process.cwd(), 'node_modules', 'onnxruntime-web', 'dist');
+const PUBLIC_PATH = path.join(process.cwd(), 'public', 'ort');
+
+// Ensure target directory exists
+if (!fs.existsSync(PUBLIC_PATH)) {
+    fs.mkdirSync(PUBLIC_PATH, { recursive: true });
+}
+
+// Copy WASM files
+WASM_FILES.forEach(file => {
+    const src = path.join(ORT_PATH, file);
+    const dest = path.join(PUBLIC_PATH, file);
+
+    if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+        console.log(`✓ Copied ${file} to ${dest}`);
+    } else {
+        console.warn(`⚠ Source file not found: ${src}`);
     }
-
-    // List of required WASM files
-    const wasmFiles = [
-        'ort-wasm.wasm',
-        'ort-wasm-simd.wasm',
-        'ort-wasm-threaded.wasm',
-        'ort-wasm-simd-threaded.wasm'
-    ];
-
-    // Copy each WASM file
-    wasmFiles.forEach(file => {
-        const srcPath = path.join(ortPath, file);
-        const destPath = path.join(ortPublicPath, file);
-
-        if (fs.existsSync(srcPath)) {
-            fs.copyFileSync(srcPath, destPath);
-            console.log(`Copied ${file} to public/ort/`);
-        } else {
-            console.warn(`Warning: ${file} not found in onnxruntime-web package`);
-        }
-    });
-
-    // Verify files were copied successfully
-    const copiedFiles = fs.readdirSync(ortPublicPath);
-    console.log('\nVerifying copied files:');
-    wasmFiles.forEach(file => {
-        const exists = copiedFiles.includes(file);
-        console.log(`${file}: ${exists ? '✓' : '✗'}`);
-
-        if (!exists) {
-            console.error(`Error: ${file} was not copied successfully`);
-            process.exit(1);
-        }
-    });
-
-    console.log('\nONNX Runtime setup completed successfully');
-}
-
-try {
-    setupOnnxRuntime();
-} catch (error) {
-    console.error('Error setting up ONNX Runtime:', error);
-    process.exit(1);
-}
+});

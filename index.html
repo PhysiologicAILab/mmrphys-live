@@ -2,24 +2,24 @@
 <html lang="en">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="description" content="Real-time vital signs monitoring using computer vision">
-    <meta name="theme-color" content="#2c3e50">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="description" content="Real-time vital signs monitoring using computer vision" />
+    <meta name="theme-color" content="#2c3e50" />
     <title>Camera-based Contactless Sensing of Physiological Signals</title>
-    <link rel="stylesheet" href="/src/styles/main.css">
+    <link rel="stylesheet" href="/src/styles/main.css" />
 
-    <!-- Preload critical resources with correct attributes -->
+    <!-- Preload critical resources with correct MIME types -->
     <link rel="preload" href="/models/face-api/tiny_face_detector_model-weights_manifest.json" as="fetch"
-        type="application/json" crossorigin="anonymous">
-    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin="anonymous">
+        type="application/json" crossorigin="anonymous" />
+    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin="anonymous" />
     <link rel="preload" href="/models/rphys/SCAMPS_Multi_9x9.onnx" as="fetch" type="application/octet-stream"
-        crossorigin="anonymous">
+        crossorigin="anonymous" />
 
-    <!-- Add iOS meta tags and icons -->
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Vital Signs">
+    <!-- Add iOS meta tags -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-title" content="Vital Signs" />
 </head>
 
 <body>

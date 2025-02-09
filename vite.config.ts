@@ -8,8 +8,14 @@ function copyOrtWasmFiles() {
     return {
         name: 'copy-ort-wasm',
         buildStart() {
-            const ortPath = path.resolve('./node_modules/onnxruntime-web/dist');
-            const publicPath = path.resolve('./public');
+            // Get absolute paths
+            const ortPath = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
+            const publicPath = path.resolve(__dirname, 'public/ort');
+
+            // Ensure target directory exists
+            if (!fs.existsSync(publicPath)) {
+                fs.mkdirSync(publicPath, { recursive: true });
+            }
 
             const wasmFiles = [
                 'ort-wasm.wasm',
@@ -18,19 +24,27 @@ function copyOrtWasmFiles() {
                 'ort-wasm-simd-threaded.wasm'
             ];
 
-            // Create ort directory if it doesn't exist
-            const ortDir = path.join(publicPath, 'ort');
-            if (!fs.existsSync(ortDir)) {
-                fs.mkdirSync(ortDir, { recursive: true });
-            }
-
-            // Copy WASM files
+            // Copy files and log each operation
             wasmFiles.forEach(file => {
                 const src = path.join(ortPath, file);
-                const dest = path.join(ortDir, file);
-                if (fs.existsSync(src)) {
-                    fs.copyFileSync(src, dest);
-                    console.log(`Copied ${file} to public/ort/`);
+                const dest = path.join(publicPath, file);
+
+                try {
+                    if (fs.existsSync(src)) {
+                        fs.copyFileSync(src, dest);
+                        console.log(`✓ Copied ${file} to ${dest}`);
+                    } else {
+                        // Try alternate path for newer versions of onnxruntime-web
+                        const altSrc = path.join(ortPath, '..', 'lib', file);
+                        if (fs.existsSync(altSrc)) {
+                            fs.copyFileSync(altSrc, dest);
+                            console.log(`✓ Copied ${file} from alternate path to ${dest}`);
+                        } else {
+                            console.warn(`⚠ Source file not found: ${src} or ${altSrc}`);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Error copying ${file}:`, error);
                 }
             });
         }
@@ -64,7 +78,14 @@ export default defineConfig({
     },
     worker: {
         format: 'es',
-        plugins: []
+        plugins: [],
+        rollupOptions: {
+            output: {
+                format: 'es',
+                chunkFileNames: 'assets/worker-[hash].js'
+            }
+        },
+        tsconfigFilePath: './tsconfig.worker.json',
     },
     optimizeDeps: {
         exclude: ['onnxruntime-web']
@@ -75,10 +96,10 @@ export default defineConfig({
             'Cross-Origin-Embedder-Policy': 'require-corp',
             'Cross-Origin-Opener-Policy': 'same-origin',
             'Cross-Origin-Resource-Policy': 'same-site',
-            'Cross-Origin-Isolation': 'require-corp'  // Added for SharedArrayBuffer support
+            'Cross-Origin-Isolation': 'require-corp'
         },
         allowedHosts: true,
-        middleware: [
+        middlewares: [
             (req, res, next) => {
                 if (req.url?.endsWith('.wasm')) {
                     res.setHeader('Content-Type', 'application/wasm');
@@ -87,6 +108,14 @@ export default defineConfig({
                 }
                 next();
             }
-        ]
+        ],
+        proxy: {
+            '/ort': {
+                target: 'http://localhost:3000',
+                changeOrigin: true,
+                secure: false,
+                ws: true
+            }
+        }
     }
 });

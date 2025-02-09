@@ -18,6 +18,12 @@
 
     /* Animation variables */
     --transition-speed: 0.2s;
+
+    /* Chart colors */
+    --bvp-color: rgb(75, 192, 192);
+    --bvp-color-light: rgba(75, 192, 192, 0.2);
+    --resp-color: rgb(255, 99, 132);
+    --resp-color-light: rgba(255, 99, 132, 0.2);
 }
 
 /* Reset with performance considerations */
@@ -143,7 +149,7 @@ h1 {
     pointer-events: none;
 }
 
-/* Charts section */
+/* Enhanced Charts section */
 .charts-section {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -151,38 +157,77 @@ h1 {
     margin-bottom: 2rem;
 }
 
+.vital-signs-chart {
+    background: white;
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: transform var(--transition-speed) ease-out;
+}
+
+.vital-signs-chart:hover {
+    transform: translateY(-2px);
+}
+
 .chart-container {
+    position: relative;
+    width: 100%;
+    height: var(--chart-height);
     background-color: white;
     padding: 1rem;
     border-radius: var(--border-radius);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    height: 300px;
 }
 
-/* Metrics display */
+/* Enhanced Metrics display */
 .metric {
     text-align: center;
-    margin-top: 10px;
-    font-size: 1.2rem;
+    margin-top: 1rem;
+    font-size: 1.25rem;
     font-weight: 600;
-    padding: 10px;
+    padding: 0.75rem;
     border-radius: var(--border-radius);
-    transition: background-color var(--transition-speed) ease-out;
+    transition: all var(--transition-speed) ease-out;
 }
 
 .metric.normal {
-    background-color: rgba(46, 204, 113, 0.2);
+    background-color: var(--success-color-light, rgba(46, 204, 113, 0.1));
     color: var(--success-color);
+    border: 1px solid var(--success-color);
 }
 
 .metric.high {
-    background-color: rgba(231, 76, 60, 0.2);
+    background-color: var(--error-color-light, rgba(231, 76, 60, 0.1));
     color: var(--error-color);
+    border: 1px solid var(--error-color);
 }
 
 .metric.low {
-    background-color: rgba(241, 196, 15, 0.2);
+    background-color: var(--warning-color-light, rgba(241, 196, 15, 0.1));
     color: var(--warning-color);
+    border: 1px solid var(--warning-color);
+}
+
+/* Chart-specific styles */
+.vital-signs-chart .chart-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--primary-color);
+    margin-bottom: 0.5rem;
+}
+
+.vital-signs-chart canvas {
+    max-height: 100%;
+    width: 100%;
+}
+
+/* Tooltip customization */
+.chartjs-tooltip {
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: var(--border-radius);
+    color: white;
+    padding: 0.5rem;
+    font-size: 0.875rem;
 }
 
 /* Status messages */
@@ -238,7 +283,26 @@ h1 {
 }
 
 /* Responsive design */
+/* Responsive design updates */
 @media (max-width: 768px) {
+    .charts-section {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .vital-signs-chart {
+        padding: 0.75rem;
+    }
+
+    .chart-container {
+        height: calc(var(--chart-height) * 0.8);
+    }
+
+    .metric {
+        font-size: 1rem;
+        padding: 0.5rem;
+    }
+
     .app-container {
         padding: 0.5rem;
     }
@@ -288,7 +352,14 @@ h1 {
         grid-template-columns: 1fr;
     }
 
+    .vital-signs-chart {
+        break-inside: avoid;
+        page-break-inside: avoid;
+        box-shadow: none;
+    }
+
     .chart-container {
+        box-shadow: none;
         break-inside: avoid;
         page-break-inside: avoid;
     }

@@ -33,29 +33,23 @@ export class FaceDetector {
 
         this.initializationPromise = (async () => {
             try {
-                // Set up environment
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                if (!ctx) {
-                    throw new Error('Could not get canvas context');
-                }
-
-                // Initialize face-api environment
+                // Initialize face-api environment first
                 await this.setupFaceAPI();
 
-                // Initialize the tiny face detector model
+                // Load model weights
+                await this.loadModelWeights();
+
+                // Initialize detector only after weights are loaded
                 this.net = new faceapi.TinyFaceDetector({
                     inputSize: 224,
                     scoreThreshold: 0.5
                 });
 
-                // Load model weights
-                await this.loadModelWeights();
-
                 this.isInitialized = true;
                 console.log('Face detection model loaded successfully');
             } catch (error) {
                 this.isInitialized = false;
+                this.net = null;
                 this.initializationPromise = null;
                 console.error('Face detector initialization error:', error);
                 throw error;
@@ -66,7 +60,12 @@ export class FaceDetector {
     }
 
     private async setupFaceAPI(): Promise<void> {
-        // Set up the environment for face-api.js
+        // Ensure we're in a browser environment
+        if (typeof window === 'undefined') {
+            throw new Error('Browser environment required');
+        }
+
+        // Initialize face-api environment
         const env = {
             Canvas: HTMLCanvasElement,
             Image: HTMLImageElement,
@@ -76,31 +75,32 @@ export class FaceDetector {
             createImageElement: () => document.createElement('img')
         };
 
-        // @ts-ignore - face-api.js types are not perfect
+        // Initialize face-api environment
         faceapi.env.monkeyPatch(env);
+
+        // Verify canvas support
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            throw new Error('Canvas 2D context not supported');
+        }
     }
 
     private async loadModelWeights(): Promise<void> {
         try {
             const modelPath = '/models/face-api';
-            const manifestPath = `${modelPath}/tiny_face_detector_model-weights_manifest.json`;
 
-            // Load and validate manifest
-            const manifestResponse = await fetch(manifestPath, {
-                cache: 'force-cache',
-                credentials: 'same-origin'
-            });
-
-            if (!manifestResponse.ok) {
-                throw new Error(`Failed to load model manifest: ${manifestResponse.statusText}`);
+            // Ensure TinyFaceDetector is not already loaded
+            if (faceapi.nets.tinyFaceDetector.isLoaded) {
+                await faceapi.nets.tinyFaceDetector.dispose();
             }
 
-            // Load the model
+            // Load weights
             await faceapi.nets.tinyFaceDetector.load(modelPath);
 
             // Verify model is loaded
             if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-                throw new Error('Face detector model failed to load');
+                throw new Error('Model failed to load');
             }
         } catch (error) {
             throw new Error(`Model weights loading failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -117,9 +117,9 @@ export class FaceDetector {
             return this.currentFaceBox;
         }
 
+        let input: HTMLCanvasElement | null = null;
         try {
-            // Create tensor from video element
-            const input = await faceapi.createCanvasFromMedia(videoElement);
+            input = await faceapi.createCanvasFromMedia(videoElement);
             const detection = await faceapi.detectSingleFace(input, this.net);
 
             if (detection) {
@@ -137,12 +137,15 @@ export class FaceDetector {
                 };
             }
 
-            input.remove();
             this.lastDetectionTime = currentTime;
             return this.currentFaceBox;
         } catch (error) {
             console.error('Face detection error:', error);
             return this.currentFaceBox;
+        } finally {
+            if (input) {
+                input.remove();
+            }
         }
     }
 
@@ -152,6 +155,7 @@ export class FaceDetector {
         }
 
         this.stopDetection();
+
         this.detectionInterval = window.setInterval(
             () => this.detectFace(videoElement),
             this.detectionThrottleMs

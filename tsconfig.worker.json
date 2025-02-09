@@ -1,0 +1,15 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "lib": [
+            "WebWorker",
+            "ES2020"
+        ],
+        "types": [
+            "vite/client"
+        ]
+    },
+    "include": [
+        "src/workers/**/*"
+    ]
+}

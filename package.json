@@ -4,22 +4,24 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "setup": "node scripts/setup-onnx.cjs && node scripts/copy-wasm.cjs",
+    "setup": "node scripts/setup-face-api.cjs && node scripts/setup-onnx.cjs",
     "verify-setup": "node scripts/setup-onnx.cjs",
-    "predev": "npm run setup",
+    "clean": "rimraf public/ort public/models/face-api dist node_modules/.vite",
+    "predev": "npm run clean && npm run setup",
     "dev": "vite",
-    "prebuild": "npm run setup",
+    "prebuild": "npm run clean && npm run setup",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest"
   },
+  "resolutions": {
+    "onnxruntime-web": "1.14.0"
+  },
   "dependencies": {
     "chart.js": "^4.3.0",
     "face-api.js": "^0.22.2",
-    "onnxruntime-node": "^1.20.1",
-    "onnxruntime-react-native": "^1.20.1",
-    "onnxruntime-web": "^1.20.1",
+    "onnxruntime-web": "^1.14.0",
     "react": "^18.2.0",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.2.0"

@@ -1,5 +1,16 @@
 import * as ort from 'onnxruntime-web';
 
+// First, configure the ONNX Runtime WebAssembly backend
+ort.env.wasm.wasmPaths = {
+    'ort-wasm.wasm': '/ort/ort-wasm.wasm',
+    'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
+    'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
+    'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
+};
+
+// Register WebAssembly backend
+await ort.backend.registerBackend('wasm', {}, true);
+
 export interface ModelConfig {
     sampling_rate: number;
     input_size: number[];
@@ -51,7 +62,6 @@ export class VitalSignsModel {
             enableCpuMemArena: true,
             enableMemPattern: true,
             executionMode: 'sequential',
-            useWebGPU: false
         };
     }
 
@@ -107,7 +117,7 @@ export class VitalSignsModel {
             }
 
             // Initialize ONNX Runtime first
-            await this.initializeOrtRuntime();
+            await this.configureOrtEnvironment();
 
             // Then load config and model
             await this.loadConfig();
@@ -120,27 +130,32 @@ export class VitalSignsModel {
         }
     }
 
-    private async initializeOrtRuntime(): Promise<void> {
+    private async configureOrtEnvironment(onnxRuntime: typeof import('onnxruntime-web')): Promise<void> {
         try {
-            // Ensure ort.env is properly initialized
-            if (!ort.env) {
+            const env = onnxRuntime.env;
+            if (!env) {
                 throw new Error('ONNX Runtime environment not available');
             }
 
-            // Configure WASM path
-            ort.env.wasm.wasmPaths = {
+            // Configure WASM paths - use absolute paths from root
+            env.wasm.wasmPaths = {
                 'ort-wasm.wasm': '/ort/ort-wasm.wasm',
                 'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
-                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm'
+                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
+                'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
             };
 
-            // Set other environment configurations
-            ort.env.wasm.numThreads = 1;
-            ort.env.wasm.simd = true;
+            // Log the actual paths being used
+            console.log('WASM paths configuration:', env.wasm.wasmPaths);
 
-            console.log('ONNX Runtime environment initialized');
+            // Configure WASM flags
+            env.wasm.numThreads = 1;
+            env.wasm.simd = true;
+            env.wasm.proxy = false;
+
+            console.log('ONNX Runtime environment configured successfully');
         } catch (error) {
-            console.error('ONNX Runtime initialization error:', error);
+            console.error('Failed to configure ONNX Runtime environment:', error);
             throw error;
         }
     }
