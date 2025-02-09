@@ -38,8 +38,8 @@ npm install
 3. Place your PyTorch model in the appropriate directory:
 
 ```bash
-src/models/vital-signs/model.onnx
-src/models/vital-signs/config.json
+src/models/rphys/model.onnx
+src/models/rphys/config.json
 ```
 
 4. Download face-api.js models:
@@ -71,6 +71,9 @@ Preview the production build:
 npm run preview
 ```
 
+Temporary public IP access:
+ngrok http http://localhost:3000/ --url=cheetah-stirred-freely.ngrok-free.app
+
 ## Project Structure
 
 ```
@@ -88,14 +91,14 @@ project-root/
 │   │   └── charts.js
 │   ├── models/
 │   │   ├── face-api/
-│   │   └── vital-signs/
+│   │   └── rphys/
 │   └── workers/
 │       └── inferenceWorker.js
 ```
 
 ## Configuration
 
-Update the configuration in `src/models/vital-signs/config.json`:
+Update the configuration in `src/models/rphys/config.json`:
 
 ```json
 {

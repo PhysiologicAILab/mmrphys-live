@@ -1,0 +1,256 @@
+import * as ort from 'onnxruntime-web';
+
+export interface ModelConfig {
+    sampling_rate: number;
+    input_size: number[];
+    output_names: string[];
+}
+
+export interface InferenceResult {
+    bvp: number[];
+    resp: number[];
+    heartRate: number;
+    respRate: number;
+    inferenceTime: number;
+}
+
+export class VitalSignsModel {
+    private session: ort.InferenceSession | null;
+    private inputName: string;
+    private config: ModelConfig | null;
+    private isInitialized: boolean;
+    private readonly modelOptions: ort.SessionOptions;
+
+    constructor() {
+        this.session = null;
+        this.inputName = '';
+        this.config = null;
+        this.isInitialized = false;
+        this.modelOptions = {
+            executionProviders: ['wasm'],
+            graphOptimizationLevel: 'all'
+        };
+    }
+
+    async initialize(): Promise<void> {
+        try {
+            await this.loadConfig();
+            await this.initializeSession();
+            this.isInitialized = true;
+        } catch (error) {
+            console.error('Model initialization error:', error);
+            throw new Error(`Model initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    private async loadConfig(): Promise<void> {
+        try {
+            const configResponse = await fetch('/models/rphys/config.json');
+            if (!configResponse.ok) {
+                throw new Error(`Config load failed: ${configResponse.statusText}`);
+            }
+            this.config = await configResponse.json();
+        } catch (error) {
+            throw new Error(`Failed to load model config: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    private async initializeSession(): Promise<void> {
+        try {
+            if (!this.checkWebAssemblySupport()) {
+                throw new Error('WebAssembly is not supported in this browser');
+            }
+
+            this.session = await ort.InferenceSession.create(
+                '/models/rphys/SCAMPS_Multi_9x9.onnx',
+                this.modelOptions
+            );
+
+            // Store input name for later use
+            this.inputName = this.session.inputNames[0];
+
+            await this.warmupModel();
+        } catch (error) {
+            throw new Error(`Session initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    private checkWebAssemblySupport(): boolean {
+        try {
+            if (typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function') {
+                const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+                return module instanceof WebAssembly.Module;
+            }
+        } catch (error) {
+            return false;
+        }
+        return false;
+    }
+
+    private async warmupModel(): Promise<void> {
+        const dummyInput = new Float32Array(1 * 90 * 3 * 9 * 9).fill(0);
+        const tensorDims = [1, 90, 3, 9, 9];
+        const input = new ort.Tensor('float32', dummyInput, tensorDims);
+        const feeds: Record<string, ort.Tensor> = {};
+        feeds[this.inputName] = input;
+
+        await this.session!.run(feeds);
+    }
+
+    preprocessFrames(frameBuffer: ImageData[]): Float32Array {
+        if (!frameBuffer || frameBuffer.length < 90) {
+            throw new Error('Insufficient frames for inference');
+        }
+
+        const batchSize = 1;
+        const sequenceLength = frameBuffer.length;
+        const height = 9;
+        const width = 9;
+        const channels = 3;
+
+        const inputTensor = new Float32Array(
+            batchSize * sequenceLength * channels * height * width
+        );
+
+        try {
+            frameBuffer.forEach((frame, frameIdx) => {
+                if (!frame || !frame.data) {
+                    throw new Error(`Invalid frame at index ${frameIdx}`);
+                }
+
+                for (let c = 0; c < channels; c++) {
+                    for (let h = 0; h < height; h++) {
+                        for (let w = 0; w < width; w++) {
+                            const pixelIdx = (h * width + w) * 4;
+                            const tensorIdx =
+                                frameIdx * (channels * height * width) +
+                                c * (height * width) +
+                                h * width +
+                                w;
+                            inputTensor[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
+                        }
+                    }
+                }
+            });
+
+            return inputTensor;
+        } catch (error) {
+            throw new Error(`Frame preprocessing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    async inference(frameBuffer: ImageData[]): Promise<InferenceResult> {
+        if (!this.isInitialized || !this.session) {
+            throw new Error('Model not initialized');
+        }
+
+        try {
+            const startTime = performance.now();
+            const inputTensor = this.preprocessFrames(frameBuffer);
+
+            const tensorDims = [1, frameBuffer.length, 3, 9, 9];
+            const input = new ort.Tensor('float32', inputTensor, tensorDims);
+
+            const feeds: Record<string, ort.Tensor> = {};
+            feeds[this.inputName] = input;
+
+            const results = await this.session.run(feeds);
+
+            const bvpSignal = Array.from(results['bvp_signal'].data as Float32Array);
+            const respSignal = Array.from(results['resp_signal'].data as Float32Array);
+
+            const heartRate = this.calculateRate(bvpSignal, 'heart');
+            const respRate = this.calculateRate(respSignal, 'resp');
+
+            const inferenceTime = performance.now() - startTime;
+
+            return {
+                bvp: bvpSignal,
+                resp: respSignal,
+                heartRate,
+                respRate,
+                inferenceTime
+            };
+        } catch (error) {
+            console.error('Inference error:', error);
+            throw new Error(`Inference failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    private calculateRate(signal: number[], type: 'heart' | 'resp'): number {
+        try {
+            const samplingRate = this.config?.sampling_rate ?? 30;
+            const peaks = this.findPeaks(signal);
+
+            if (peaks.length < 2) {
+                throw new Error('Insufficient peaks detected');
+            }
+
+            const intervals = this.calculateIntervals(peaks);
+            const avgInterval = this.getAverageInterval(intervals);
+            const rate = 60 / (avgInterval / samplingRate);
+
+            return this.validateRate(rate, type);
+        } catch (error) {
+            console.warn(`Rate calculation warning: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return type === 'heart' ? 75 : 15; // Return physiologically reasonable defaults
+        }
+    }
+
+    private findPeaks(signal: number[]): number[] {
+        const peaks: number[] = [];
+        const minPeakDistance = Math.floor((this.config?.sampling_rate ?? 30) * 0.25);
+
+        for (let i = 1; i < signal.length - 1; i++) {
+            if (signal[i] > signal[i - 1] && signal[i] > signal[i + 1]) {
+                if (peaks.length === 0 || (i - peaks[peaks.length - 1]) >= minPeakDistance) {
+                    peaks.push(i);
+                }
+            }
+        }
+        return peaks;
+    }
+
+    private calculateIntervals(peaks: number[]): number[] {
+        return peaks.slice(1).map((peak, i) => peak - peaks[i]);
+    }
+
+    private getAverageInterval(intervals: number[]): number {
+        const median = this.calculateMedian(intervals);
+        const mad = this.calculateMedian(intervals.map(x => Math.abs(x - median)));
+
+        const validIntervals = intervals.filter(x => Math.abs(x - median) < mad * 2.5);
+
+        return validIntervals.reduce((a, b) => a + b, 0) / validIntervals.length;
+    }
+
+    private calculateMedian(values: number[]): number {
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 === 0
+            ? (sorted[mid - 1] + sorted[mid]) / 2
+            : sorted[mid];
+    }
+
+    private validateRate(rate: number, type: 'heart' | 'resp'): number {
+        const limits = {
+            heart: { min: 40, max: 180 },
+            resp: { min: 8, max: 30 }
+        };
+
+        const { min, max } = limits[type];
+        return Math.min(Math.max(rate, min), max);
+    }
+
+    async dispose(): Promise<void> {
+        if (this.session) {
+            try {
+                await this.session.release();
+                this.session = null;
+                this.isInitialized = false;
+            } catch (error) {
+                console.error('Error disposing model:', error);
+            }
+        }
+    }
+}

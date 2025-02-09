@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Real-time vital signs monitoring using computer vision">
+    <meta name="theme-color" content="#2c3e50">
+    <title>Vital Signs Monitor</title>
+    <link rel="stylesheet" href="/src/styles/main.css">
+
+    <!-- Preload critical resources with correct as attribute -->
+    <link rel="preload" href="/models/face-api/tiny_face_detector_model-weights_manifest.json" as="fetch"
+        type="application/json" crossorigin>
+    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin>
+    <link rel="preload" href="/models/rphys/SCAMPS_Multi_9x9.onnx" as="fetch" type="application/octet-stream"
+        crossorigin>
+
+    <!-- Add iOS meta tags and icons -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Vital Signs">
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <!-- Feature detection and fallback -->
+    <script>
+        // Check for required features
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            document.body.innerHTML = '<div class="error-message">' +
+                'Your browser does not support camera access. ' +
+                'Please use a modern browser like Chrome, Firefox, or Safari.' +
+                '</div>';
+        }
+    </script>
+
+    <!-- Load application -->
+    <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>
