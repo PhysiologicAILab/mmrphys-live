@@ -77,6 +77,7 @@ export default defineConfig({
             'Cross-Origin-Resource-Policy': 'same-site',
             'Cross-Origin-Isolation': 'require-corp'  // Added for SharedArrayBuffer support
         },
+        allowedHosts: true,
         middleware: [
             (req, res, next) => {
                 if (req.url?.endsWith('.wasm')) {

@@ -1,5 +1,4 @@
-import * as ort from 'onnxruntime-web';
-import { VitalSignsModel, InferenceResult } from '../utils/modelInference';
+import { InferenceResult } from '../utils/modelInference';
 
 interface WorkerMessage {
     type: string;
@@ -23,9 +22,8 @@ interface PerformanceStats {
     errorCount: number;
 }
 
-
 class InferenceWorker {
-    private model: VitalSignsModel | null = null;
+    private model: any = null;
     private isProcessing: boolean = false;
     private processingQueue: Array<{
         frameBuffer: ImageData[];
@@ -39,7 +37,6 @@ class InferenceWorker {
     };
 
     constructor() {
-        // Don't initialize in constructor
         this.initializeAsync();
     }
 
@@ -47,10 +44,16 @@ class InferenceWorker {
         try {
             console.log('Initializing inference worker...');
 
-            // Initialize ONNX Runtime environment first
-            await this.configureOrtEnvironment();
+            // Import dependencies dynamically to ensure proper initialization
+            const [ort, { VitalSignsModel }] = await Promise.all([
+                import('onnxruntime-web'),
+                import('../utils/modelInference')
+            ]);
 
-            // Then initialize the model
+            // Configure ONNX Runtime environment
+            await this.configureOrtEnvironment(ort);
+
+            // Initialize the model
             this.model = new VitalSignsModel();
             await this.model.initialize();
 
@@ -62,23 +65,31 @@ class InferenceWorker {
         }
     }
 
-    private async configureOrtEnvironment(): Promise<void> {
+
+    private async configureOrtEnvironment(ort: typeof import('onnxruntime-web')): Promise<void> {
         try {
-            // Ensure ort.env is available
+            // Initialize ONNX Runtime environment
             if (!ort.env) {
                 throw new Error('ONNX Runtime environment not available');
             }
 
             // Configure WASM paths
-            ort.env.wasm.wasmPaths = {
+            const wasmPaths = {
                 'ort-wasm.wasm': '/ort/ort-wasm.wasm',
                 'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
-                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm'
+                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
+                'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
             };
+
+            // Set WASM paths
+            ort.env.wasm.wasmPaths = wasmPaths;
 
             // Configure threading and SIMD
             ort.env.wasm.numThreads = 1;
             ort.env.wasm.simd = true;
+
+            // Optionally set proxy configuration if needed
+            ort.env.wasm.proxy = false;
 
             console.log('ONNX Runtime environment configured successfully');
         } catch (error) {
