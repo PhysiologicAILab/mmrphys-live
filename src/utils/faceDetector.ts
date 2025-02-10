@@ -184,17 +184,22 @@ export class FaceDetector {
         this.stopDetection();
 
         try {
-            // Safely dispose of the TinyFaceDetector model
+            // Properly unload and reset the model
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
                 await faceapi.nets.tinyFaceDetector.dispose();
+
+                // Additional reset steps
+                (faceapi.nets.tinyFaceDetector as any)._modelPath = null;
+                (faceapi.nets.tinyFaceDetector as any)._isLoaded = false;
             }
+
+            // Reset internal state
+            this.currentFaceBox = null;
             this.isInitialized = false;
             this.initializationPromise = null;
+            this.lastDetectionTime = 0;
         } catch (error) {
-            console.warn('Soft error during face detector disposal:', error);
-            // Do not rethrow to prevent breaking the application
-            this.isInitialized = false;
-            this.initializationPromise = null;
+            console.warn('Error during face detector disposal:', error);
         }
     }
 }

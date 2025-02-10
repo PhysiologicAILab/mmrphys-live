@@ -262,7 +262,12 @@ const App: React.FC = () => {
 
             // Initialize components
             componentsRef.current.videoProcessor = new VideoProcessor();
-            componentsRef.current.faceDetector = new FaceDetector();
+
+            updateStatus('Initializing face detection...', 'info');
+            const faceDetector = new FaceDetector();
+            await faceDetector.initialize();
+            componentsRef.current.faceDetector = faceDetector;
+
             componentsRef.current.signalProcessor = new SignalProcessor();
 
             // Configure components
@@ -351,27 +356,55 @@ const App: React.FC = () => {
         }
     }, [updateStatus, processFrames]);
 
-    // Stop video capture
     const stopCapture = useCallback(async () => {
         try {
-            const { animationFrameId, videoProcessor, faceDetector } = componentsRef.current;
+            const { animationFrameId, videoProcessor, faceDetector, inferenceWorker } = componentsRef.current;
 
+            // Cancel any ongoing animation frame
             if (animationFrameId) {
                 cancelAnimationFrame(animationFrameId);
                 componentsRef.current.animationFrameId = null;
             }
 
+            // Stop video capture
             if (videoProcessor) {
                 await videoProcessor.stopCapture();
             }
 
+            // Stop and fully dispose of face detection
             if (faceDetector) {
                 faceDetector.stopDetection();
                 await faceDetector.dispose();
+
+                // Reinitialize face detector
+                componentsRef.current.faceDetector = new FaceDetector();
+                await componentsRef.current.faceDetector.initialize();
             }
 
+            // Terminate inference worker if active
+            if (inferenceWorker) {
+                inferenceWorker.terminate();
+                componentsRef.current.inferenceWorker = null;
+            }
+
+            // Reset component states
             setIsCapturing(false);
+            setFaceDetected(false);
+            setHasMinimumFrames(false);
+            setBufferProgress(0);
+
+            // Reset vital signs
+            setVitalSigns({
+                heartRate: 0,
+                respRate: 0,
+                bvpSignal: [],
+                respSignal: [],
+                lastUpdateTime: Date.now()
+            });
+
+            // Update status
             updateStatus('Capture stopped', 'success');
+
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
             updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
