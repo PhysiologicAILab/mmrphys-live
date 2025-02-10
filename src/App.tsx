@@ -354,26 +354,19 @@ const App: React.FC = () => {
 
                     const progress = videoProcessor.getBufferUsagePercentage();
                     setBufferProgress(progress);
-                    console.log('Buffer progress:', progress);
 
                     const hasMinFrames = videoProcessor.hasMinimumFrames();
-                    setHasMinimumFrames(prevState => {
-                        if (hasMinFrames !== prevState) {
-                            console.log('Minimum frames status changed:', hasMinFrames);
-                        }
-                        return hasMinFrames;
-                    });
+                    if (hasMinFrames !== hasMinimumFrames) {
+                        setHasMinimumFrames(hasMinFrames);
+                    }
 
                     // Run inference when we have enough frames
                     if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
                         const frameBuffer = videoProcessor.getFrameBuffer();
-                        console.log('Running inference with buffer size:', frameBuffer.length);
-
                         inferenceWorker.postMessage({
                             type: 'inference',
                             data: { frameBuffer }
                         });
-
                         componentsRef.current.lastInferenceTime = currentTime;
                     }
                 }
@@ -386,7 +379,7 @@ const App: React.FC = () => {
         if (isCapturing) {
             componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
         }
-    }, [isCapturing, updateFaceDetectionStatus]);
+    }, [isCapturing, updateFaceDetectionStatus, hasMinimumFrames]);
 
     // Start video capture
     const startCapture = useCallback(async () => {
@@ -416,6 +409,11 @@ const App: React.FC = () => {
                 checkVideo();
             });
 
+            // Clear frame buffer before starting
+            videoProcessor.clearFrameBuffer();
+            setBufferProgress(0);
+            setHasMinimumFrames(false);
+
             // Then start face detection
             faceDetector.startDetection(videoProcessor.videoElement);
             console.log('Face detection started');
@@ -429,8 +427,6 @@ const App: React.FC = () => {
             const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
             updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
             console.error('Capture start error:', error);
-
-            // Cleanup on failure
             await stopCapture();
         }
     }, [updateStatus, processFrames]);

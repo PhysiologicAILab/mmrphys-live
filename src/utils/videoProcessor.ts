@@ -155,9 +155,7 @@ export class VideoProcessor {
     }
 
     processFrame(faceBox: FaceBox): ImageData | null {
-        if (!faceBox || !this.videoElement.videoWidth) {
-            return null;
-        }
+        if (!faceBox || !this.videoElement.videoWidth) return null;
 
         const currentTime = performance.now();
         const frameInterval = 1000 / this.targetFPS;
@@ -165,7 +163,6 @@ export class VideoProcessor {
         if (currentTime - this.lastFrameTimestamp < frameInterval) {
             return null;
         }
-        this.lastFrameTimestamp = currentTime;
 
         try {
             // Process for display (256x256)
@@ -175,6 +172,7 @@ export class VideoProcessor {
             const processedFrame = this.processForInference(faceBox);
 
             this.frameCount++;
+            this.lastFrameTimestamp = currentTime;
             return processedFrame;
         } catch (error) {
             console.error('Frame processing error:', error);
@@ -184,7 +182,7 @@ export class VideoProcessor {
     }
 
     private processForDisplay(faceBox: FaceBox): void {
-        // Clear the canvas
+        // Clear the cropped canvas
         this.croppedCtx.clearRect(0, 0, 256, 256);
 
         // Save context state
@@ -195,17 +193,24 @@ export class VideoProcessor {
         this.croppedCtx.ellipse(128, 128, 124, 124, 0, 0, 2 * Math.PI);
         this.croppedCtx.clip();
 
-        // Draw face region at full resolution
+        // Calculate aspect ratio preserving dimensions
+        const scale = Math.min(256 / faceBox.width, 256 / faceBox.height);
+        const scaledWidth = faceBox.width * scale;
+        const scaledHeight = faceBox.height * scale;
+        const offsetX = (256 - scaledWidth) / 2;
+        const offsetY = (256 - scaledHeight) / 2;
+
+        // Draw face region preserving aspect ratio
         this.croppedCtx.drawImage(
             this.videoElement,
             faceBox.x,
             faceBox.y,
             faceBox.width,
             faceBox.height,
-            0,
-            0,
-            256,
-            256
+            offsetX,
+            offsetY,
+            scaledWidth,
+            scaledHeight
         );
 
         // Restore context state
@@ -236,13 +241,13 @@ export class VideoProcessor {
     }
 
     private updateDisplay(): void {
-        if (!this.displayCtx || !this.displayCanvas) {
-            return;
-        }
+        if (!this.displayCtx || !this.displayCanvas) return;
 
         try {
-            // Draw the cropped face to display canvas
-            this.displayCtx.clearRect(0, 0, 256, 256);
+            // Important: Clear the display canvas first
+            this.displayCtx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+
+            // Draw the cropped face image
             this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
         } catch (error) {
             console.error('Error updating display:', error);

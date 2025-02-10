@@ -1,4 +1,3 @@
-// VideoDisplay.tsx
 import React, { useEffect, useRef } from 'react';
 import { VideoDisplayProps } from '@/types';
 
@@ -12,25 +11,36 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
     useEffect(() => {
         if (!canvasRef.current || !videoProcessor) return;
 
-        try {
-            // Clear any existing display
-            const ctx = canvasRef.current.getContext('2d');
-            if (ctx) {
-                ctx.fillStyle = 'black';
-                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-            }
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d', {
+            alpha: false,
+            desynchronized: true
+        });
 
-            // Attach new canvas
-            videoProcessor.attachCanvas(canvasRef.current);
-            console.log('Canvas attached successfully');
-
-            return () => {
-                videoProcessor.detachCanvas();
-            };
-        } catch (error) {
-            console.error('Error in VideoDisplay:', error);
+        if (!ctx) {
+            console.error('Failed to get canvas context');
+            return;
         }
-    }, [videoProcessor, canvasRef]);
+
+        // Clear canvas
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        try {
+            videoProcessor.attachCanvas(canvas);
+            console.log('Canvas attached successfully');
+        } catch (error) {
+            console.error('Error attaching canvas:', error);
+        }
+
+        return () => {
+            try {
+                videoProcessor.detachCanvas();
+            } catch (error) {
+                console.error('Error detaching canvas:', error);
+            }
+        };
+    }, [videoProcessor]);
 
     return (
         <div className="video-section">
@@ -39,7 +49,6 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
                     ref={canvasRef}
                     width={256}
                     height={256}
-                    style={{ width: '100%', height: '100%' }}
                 />
                 {bufferProgress > 0 && bufferProgress < 100 && (
                     <div className="buffer-progress">
