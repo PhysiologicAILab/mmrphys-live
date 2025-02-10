@@ -48,6 +48,7 @@ interface WorkerMessage {
 
 const INFERENCE_INTERVAL = 2000; // 2 seconds
 const REQUIRED_FRAMES = 90; // Number of frames needed for inference
+const WORKER_TIMEOUT = 15000; // 15 seconds for worker initialization
 
 const App: React.FC = () => {
     // State management
@@ -109,46 +110,6 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // Initialize worker with error handling
-    const initializeWorker = useCallback(async () => {
-        return new Promise<void>((resolve, reject) => {
-            try {
-                const worker = new Worker(
-                    new URL('./workers/inferenceWorker.ts', import.meta.url),
-                    { type: 'module' }
-                );
-
-                const timeout = setTimeout(() => {
-                    worker.terminate();
-                    reject(new Error('Worker initialization timeout'));
-                }, 10000);
-
-                worker.onerror = (error) => {
-                    clearTimeout(timeout);
-                    reject(new Error(`Worker error: ${error.message}`));
-                };
-
-                worker.onmessage = (e: MessageEvent<WorkerMessage>) => {
-                    if (e.data.type === 'init') {
-                        clearTimeout(timeout);
-                        if (e.data.status === 'success') {
-                            componentsRef.current.inferenceWorker = worker;
-                            resolve();
-                        } else {
-                            reject(new Error(e.data.error || 'Worker initialization failed'));
-                        }
-                    } else if (e.data.type === 'inference' && e.data.status === 'success') {
-                        handleInferenceResults(e.data.results);
-                    }
-                };
-
-                worker.postMessage({ type: 'init' });
-            } catch (error) {
-                reject(error);
-            }
-        });
-    }, []);
-
     // Handle inference results
     const handleInferenceResults = useCallback((results: InferenceResult | undefined) => {
         if (!results) return;
@@ -166,6 +127,81 @@ const App: React.FC = () => {
             componentsRef.current.signalProcessor.updateBuffers(results);
         }
     }, []);
+
+    const initializeWorker = useCallback(async () => {
+        return new Promise<void>((resolve, reject) => {
+            let initTimeoutId: NodeJS.Timeout;
+            let worker: Worker | null = null;
+
+            const cleanup = () => {
+                if (initTimeoutId) clearTimeout(initTimeoutId);
+                if (worker) {
+                    worker.removeEventListener('message', handleMessage);
+                    worker.removeEventListener('error', handleError);
+                }
+            };
+
+            const handleError = (event: ErrorEvent) => {
+                cleanup();
+                const errorMessage = event.message || 'Unknown worker error';
+                console.error('Worker initialization error:', errorMessage);
+                worker?.terminate();
+                reject(new Error(errorMessage));
+            };
+
+            const handleMessage = (e: MessageEvent<WorkerMessage>) => {
+                if (e.data.type === 'init') {
+                    cleanup();
+
+                    if (e.data.status === 'success') {
+                        componentsRef.current.inferenceWorker = worker;
+
+                        // Set up normal operation message handler
+                        worker!.onmessage = (e: MessageEvent<WorkerMessage>) => {
+                            if (e.data.type === 'inference' && e.data.status === 'success') {
+                                handleInferenceResults(e.data.results);
+                            } else if (e.data.status === 'error') {
+                                console.error('Worker inference error:', e.data.error);
+                                updateStatus(`Inference error: ${e.data.error}`, 'error');
+                            }
+                        };
+
+                        resolve();
+                    } else {
+                        const error = new Error(e.data.error || 'Worker initialization failed');
+                        worker?.terminate();
+                        reject(error);
+                    }
+                }
+            };
+
+            try {
+                // Create worker
+                worker = new Worker(
+                    new URL('./workers/inferenceWorker.ts', import.meta.url),
+                    { type: 'module' }
+                );
+
+                // Add event listeners
+                worker.addEventListener('message', handleMessage);
+                worker.addEventListener('error', handleError);
+
+                // Set initialization timeout
+                initTimeoutId = setTimeout(() => {
+                    cleanup();
+                    worker?.terminate();
+                    reject(new Error('Worker initialization timed out'));
+                }, WORKER_TIMEOUT);
+
+                // Start initialization
+                worker.postMessage({ type: 'init' });
+
+            } catch (error) {
+                cleanup();
+                reject(error instanceof Error ? error : new Error('Failed to create worker'));
+            }
+        });
+    }, [handleInferenceResults, updateStatus]);
 
     // Initialization of all components
     const initializeComponents = useCallback(async () => {
@@ -214,57 +250,6 @@ const App: React.FC = () => {
         }
     }, [checkDeviceSupport, initializeWorker, updateStatus]);
 
-    // Start video capture
-    const startCapture = useCallback(async () => {
-        try {
-            const { videoProcessor, faceDetector } = componentsRef.current;
-
-            if (!videoProcessor || !faceDetector) {
-                throw new Error('Components not initialized');
-            }
-
-            updateStatus('Starting capture...', 'info');
-
-            await videoProcessor.startCapture();
-            await faceDetector.startDetection(videoProcessor.videoElement);
-
-            setIsCapturing(true);
-            processFrames();
-            updateStatus('Capturing started', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
-            updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
-            console.error('Capture start error:', error);
-        }
-    }, [updateStatus]);
-
-    // Stop video capture
-    const stopCapture = useCallback(async () => {
-        try {
-            const { animationFrameId, videoProcessor, faceDetector } = componentsRef.current;
-
-            if (animationFrameId) {
-                cancelAnimationFrame(animationFrameId);
-                componentsRef.current.animationFrameId = null;
-            }
-
-            if (videoProcessor) {
-                await videoProcessor.stopCapture();
-            }
-
-            if (faceDetector) {
-                faceDetector.stopDetection();
-            }
-
-            setIsCapturing(false);
-            updateStatus('Capture stopped', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
-            updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
-            console.error('Capture stop error:', error);
-        }
-    }, [updateStatus]);
-
     // Process video frames
     const processFrames = useCallback(() => {
         if (!isCapturing) return;
@@ -300,6 +285,57 @@ const App: React.FC = () => {
         componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
     }, [isCapturing]);
 
+    // Start video capture
+    const startCapture = useCallback(async () => {
+        try {
+            const { videoProcessor, faceDetector } = componentsRef.current;
+
+            if (!videoProcessor || !faceDetector) {
+                throw new Error('Components not initialized');
+            }
+
+            updateStatus('Starting capture...', 'info');
+
+            await videoProcessor.startCapture();
+            await faceDetector.startDetection(videoProcessor.videoElement);
+
+            setIsCapturing(true);
+            processFrames();
+            updateStatus('Capturing started', 'success');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
+            updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
+            console.error('Capture start error:', error);
+        }
+    }, [updateStatus, processFrames]);
+
+    // Stop video capture
+    const stopCapture = useCallback(async () => {
+        try {
+            const { animationFrameId, videoProcessor, faceDetector } = componentsRef.current;
+
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                componentsRef.current.animationFrameId = null;
+            }
+
+            if (videoProcessor) {
+                await videoProcessor.stopCapture();
+            }
+
+            if (faceDetector) {
+                faceDetector.stopDetection();
+            }
+
+            setIsCapturing(false);
+            updateStatus('Capture stopped', 'success');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
+            updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
+            console.error('Capture stop error:', error);
+        }
+    }, [updateStatus]);
+
     // Export collected data
     const exportData = useCallback(() => {
         try {
@@ -332,9 +368,22 @@ const App: React.FC = () => {
 
     // Initialize components on mount and cleanup on unmount
     useEffect(() => {
-        initializeComponents();
+        let isMounted = true;
+
+        const init = async () => {
+            try {
+                if (isMounted) {
+                    await initializeComponents();
+                }
+            } catch (error) {
+                console.error('Initialization error:', error);
+            }
+        };
+
+        init();
 
         return () => {
+            isMounted = false;
             const { animationFrameId, inferenceWorker } = componentsRef.current;
 
             if (animationFrameId) {

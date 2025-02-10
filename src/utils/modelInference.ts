@@ -1,6 +1,6 @@
 import * as ort from 'onnxruntime-web';
 
-// First, configure the ONNX Runtime WebAssembly backend
+// Configure ONNX Runtime WebAssembly backend
 ort.env.wasm.wasmPaths = {
     'ort-wasm.wasm': '/ort/ort-wasm.wasm',
     'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
@@ -8,8 +8,9 @@ ort.env.wasm.wasmPaths = {
     'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
 };
 
-// Register WebAssembly backend
-await ort.backend.registerBackend('wasm', {}, true);
+// Set up WASM flags
+ort.env.wasm.numThreads = 1;
+ort.env.wasm.simd = true;
 
 export interface ModelConfig {
     sampling_rate: number;
