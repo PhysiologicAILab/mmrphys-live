@@ -1,3 +1,4 @@
+// VideoDisplay.tsx
 import React, { useEffect, useRef } from 'react';
 import { VideoDisplayProps } from '@/types';
 
@@ -9,33 +10,36 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
-        console.log('VideoDisplay - videoProcessor:', videoProcessor); // Debug log
-        console.log('VideoDisplay - canvasRef:', canvasRef.current); // Debug log
+        if (!canvasRef.current || !videoProcessor) return;
 
-        if (canvasRef.current && videoProcessor) {
-            try{
-                videoProcessor.attachCanvas(canvasRef.current);
-                console.log('Canvas attached successfully'); // Confirm attachment
-            } catch (error) {
-                console.error('Error attaching canvas:', error);
+        try {
+            // Clear any existing display
+            const ctx = canvasRef.current.getContext('2d');
+            if (ctx) {
+                ctx.fillStyle = 'black';
+                ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
             }
-        }
 
-        return () => {
-            if (videoProcessor) {
+            // Attach new canvas
+            videoProcessor.attachCanvas(canvasRef.current);
+            console.log('Canvas attached successfully');
+
+            return () => {
                 videoProcessor.detachCanvas();
-            }
-        };
-    }, [videoProcessor]);
+            };
+        } catch (error) {
+            console.error('Error in VideoDisplay:', error);
+        }
+    }, [videoProcessor, canvasRef]);
 
     return (
         <div className="video-section">
             <div className={`oval-frame ${faceDetected ? 'face-detected' : ''}`}>
                 <canvas
                     ref={canvasRef}
-                    id="croppedFace"
                     width={256}
                     height={256}
+                    style={{ width: '100%', height: '100%' }}
                 />
                 {bufferProgress > 0 && bufferProgress < 100 && (
                     <div className="buffer-progress">

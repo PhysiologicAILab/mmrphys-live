@@ -296,18 +296,22 @@ const App: React.FC = () => {
 
     // Process video frames with buffer tracking
     const processFrames = useCallback(() => {
-        if (!isCapturing) return;
+        if (!isCapturing) {
+            return;
+        }
 
         const { videoProcessor, faceDetector, inferenceWorker, lastInferenceTime } = componentsRef.current;
 
-        if (!videoProcessor || !faceDetector || !inferenceWorker) return;
+        if (!videoProcessor || !faceDetector || !inferenceWorker) {
+            return;
+        }
 
         const currentTime = Date.now();
         const faceBox = faceDetector.getCurrentFaceBox();
 
         updateFaceDetectionStatus(!!faceBox);
 
-        if (faceBox) {
+        if (faceBox && videoProcessor.isCapturing()) {
             const processedFrame = videoProcessor.processFrame(faceBox);
 
             if (processedFrame) {
@@ -333,7 +337,10 @@ const App: React.FC = () => {
             }
         }
 
-        componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
+        // Only continue if still capturing
+        if (isCapturing) {
+            componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
+        }
     }, [isCapturing, updateFaceDetectionStatus]);
 
     // Start video capture
@@ -345,65 +352,82 @@ const App: React.FC = () => {
                 throw new Error('Components not initialized');
             }
 
-            console.log('Starting video capture...'); // Add logging
-
-            // Check if video element exists and is valid
-            console.log('Video element:', videoProcessor.videoElement);
-            console.log('Media devices available:', await navigator.mediaDevices.enumerateDevices());
-
             updateStatus('Starting capture...', 'info');
 
+            // First start video capture
             await videoProcessor.startCapture();
-            await faceDetector.startDetection(videoProcessor.videoElement);
+            console.log('Video capture started');
 
+            // Ensure video is playing before starting face detection
+            await new Promise<void>((resolve) => {
+                const checkVideo = () => {
+                    if (videoProcessor.videoElement.readyState >= 2 &&
+                        videoProcessor.videoElement.videoWidth > 0) {
+                        resolve();
+                    } else {
+                        requestAnimationFrame(checkVideo);
+                    }
+                };
+                checkVideo();
+            });
+
+            // Then start face detection
+            faceDetector.startDetection(videoProcessor.videoElement);
+            console.log('Face detection started');
+
+            // Start frame processing
             setIsCapturing(true);
             processFrames();
-            updateStatus('Capturing started', 'success');
+
+            updateStatus('Capture started', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
             updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
             console.error('Capture start error:', error);
+
+            // Cleanup on failure
+            await stopCapture();
         }
     }, [updateStatus, processFrames]);
 
     const stopCapture = useCallback(async () => {
         try {
+            // First set capturing to false to stop frame processing
+            setIsCapturing(false);
+
             const { animationFrameId, videoProcessor, faceDetector, inferenceWorker } = componentsRef.current;
 
-            // Cancel any ongoing animation frame
-            if (animationFrameId) {
+            // Cancel any pending animation frame
+            if (animationFrameId !== null) {
                 cancelAnimationFrame(animationFrameId);
                 componentsRef.current.animationFrameId = null;
             }
 
+            // Stop face detection immediately
+            if (faceDetector) {
+                console.log('Stopping face detection');
+                faceDetector.stopDetection();
+                await faceDetector.dispose();
+                componentsRef.current.faceDetector = null;
+            }
+
             // Stop video capture
             if (videoProcessor) {
+                console.log('Stopping video capture');
                 await videoProcessor.stopCapture();
             }
 
-            // Stop and fully dispose of face detection
-            if (faceDetector) {
-                faceDetector.stopDetection();
-                await faceDetector.dispose();
-
-                // Reinitialize face detector
-                componentsRef.current.faceDetector = new FaceDetector();
-                await componentsRef.current.faceDetector.initialize();
-            }
-
-            // Terminate inference worker if active
+            // Terminate worker
             if (inferenceWorker) {
+                console.log('Terminating inference worker');
                 inferenceWorker.terminate();
                 componentsRef.current.inferenceWorker = null;
             }
 
-            // Reset component states
-            setIsCapturing(false);
+            // Reset all states
             setFaceDetected(false);
             setHasMinimumFrames(false);
             setBufferProgress(0);
-
-            // Reset vital signs
             setVitalSigns({
                 heartRate: 0,
                 respRate: 0,
@@ -412,15 +436,28 @@ const App: React.FC = () => {
                 lastUpdateTime: Date.now()
             });
 
-            // Update status
-            updateStatus('Capture stopped', 'success');
+            // Reinitialize components for next capture
+            try {
+                console.log('Reinitializing components');
+                // Create and initialize new face detector
+                const newFaceDetector = new FaceDetector();
+                await newFaceDetector.initialize();
+                componentsRef.current.faceDetector = newFaceDetector;
 
+                // Initialize new worker
+                await initializeWorker();
+            } catch (error) {
+                console.error('Error reinitializing components:', error);
+                updateStatus('Error reinitializing components', 'error');
+            }
+
+            updateStatus('Capture stopped', 'success');
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
             updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
             console.error('Capture stop error:', error);
         }
-    }, [updateStatus]);
+    }, [updateStatus, initializeWorker]);
 
     // Export collected data
     const exportData = useCallback(() => {
