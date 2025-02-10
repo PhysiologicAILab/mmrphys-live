@@ -5,6 +5,7 @@ import { SignalProcessor } from './utils/signalProcessor';
 import VideoDisplay from './components/VideoDisplay';
 import Controls from './components/Controls';
 import VitalSignsChart from './components/VitalSignsChart';
+import VitalSignsChartWrapper from './components/VitalSignsChartWrapper';
 import StatusMessage from './components/StatusMessage';
 import type { InferenceResult } from './utils/modelInference';
 
@@ -51,6 +52,7 @@ const REQUIRED_FRAMES = 150; // 5 seconds at 30fps
 const WORKER_TIMEOUT = 15000; // 15 seconds for worker initialization
 const MAX_FACE_MISSING_TIME = 3000; // 3 seconds before showing face detection warning
 
+
 const App: React.FC = () => {
     // State management
     const [isCapturing, setIsCapturing] = useState(false);
@@ -83,6 +85,29 @@ const App: React.FC = () => {
         animationFrameId: null,
         lastInferenceTime: 0
     });
+
+    const logComponentState = useCallback(() => {
+        const { videoProcessor, faceDetector, inferenceWorker } = componentsRef.current;
+        console.log('Component State:', {
+            isCapturing,
+            hasMinimumFrames,
+            faceDetected,
+            bufferProgress,
+            videoProcessorActive: videoProcessor?.isCapturing(),
+            faceDetectorActive: faceDetector?.isDetecting(),
+            hasWorker: !!inferenceWorker,
+            signalLengths: {
+                bvp: vitalSigns.bvpSignal.length,
+                resp: vitalSigns.respSignal.length
+            }
+        });
+    }, [isCapturing, hasMinimumFrames, faceDetected, bufferProgress, vitalSigns]);
+
+    // Add this effect to monitor state changes
+    useEffect(() => {
+        logComponentState();
+    }, [isCapturing, hasMinimumFrames, faceDetected, bufferProgress, logComponentState]);
+
 
     // Update status with timestamp
     const updateStatus = useCallback((message: string, type: Status['type']) => {
@@ -138,33 +163,40 @@ const App: React.FC = () => {
 
     // Handle inference results with smooth updates
     const handleInferenceResults = useCallback((results: InferenceResult | undefined) => {
-        if (!results) return;
+        if (!results || !isCapturing) return;
+
+        console.log('Processing inference results:', {
+            heartRate: results.heartRate,
+            respRate: results.respRate,
+            bvpLength: results.bvp.length,
+            respLength: results.resp.length
+        });
+
+        // Validate results before updating
+        if (!results.bvp?.length || !results.resp?.length) {
+            console.warn('Invalid inference results received');
+            return;
+        }
 
         setVitalSigns(prev => {
-            // Smooth transition for signals
-            const smoothFactor = 0.3;
-            const smoothSignal = (newData: number[], oldData: number[]) => {
-                if (oldData.length === 0) return newData;
-                return newData.map((value, i) =>
-                    oldData[i] !== undefined
-                        ? value * smoothFactor + oldData[i] * (1 - smoothFactor)
-                        : value
-                );
-            };
-
             return {
                 heartRate: results.heartRate || prev.heartRate,
                 respRate: results.respRate || prev.respRate,
-                bvpSignal: smoothSignal(results.bvp, prev.bvpSignal),
-                respSignal: smoothSignal(results.resp, prev.respSignal),
+                bvpSignal: [...results.bvp], // Create new array to ensure re-render
+                respSignal: [...results.resp],
                 lastUpdateTime: Date.now()
             };
         });
 
         if (componentsRef.current.signalProcessor) {
-            componentsRef.current.signalProcessor.updateBuffers(results);
+            try {
+                componentsRef.current.signalProcessor.updateBuffers(results);
+            } catch (error) {
+                console.error('Error updating signal buffers:', error);
+            }
         }
-    }, []);
+    }, [isCapturing]);
+
 
     const initializeWorker = useCallback(async () => {
         return new Promise<void>((resolve, reject) => {
@@ -297,12 +329,14 @@ const App: React.FC = () => {
     // Process video frames with buffer tracking
     const processFrames = useCallback(() => {
         if (!isCapturing) {
+            console.log('Frame processing stopped');
             return;
         }
 
         const { videoProcessor, faceDetector, inferenceWorker, lastInferenceTime } = componentsRef.current;
 
         if (!videoProcessor || !faceDetector || !inferenceWorker) {
+            console.warn('Missing required components for frame processing');
             return;
         }
 
@@ -312,32 +346,43 @@ const App: React.FC = () => {
         updateFaceDetectionStatus(!!faceBox);
 
         if (faceBox && videoProcessor.isCapturing()) {
-            const processedFrame = videoProcessor.processFrame(faceBox);
+            try {
+                const processedFrame = videoProcessor.processFrame(faceBox);
 
-            if (processedFrame) {
-                videoProcessor.updateFrameBuffer(processedFrame);
+                if (processedFrame) {
+                    videoProcessor.updateFrameBuffer(processedFrame);
 
-                // Update buffer progress
-                const progress = videoProcessor.getBufferUsagePercentage();
-                setBufferProgress(progress);
+                    const progress = videoProcessor.getBufferUsagePercentage();
+                    setBufferProgress(progress);
+                    console.log('Buffer progress:', progress);
 
-                const hasMinFrames = videoProcessor.hasMinimumFrames();
-                setHasMinimumFrames(hasMinFrames);
-
-                // Run inference if conditions are met
-                if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
-                    const frameBuffer = videoProcessor.getFrameBuffer();
-                    inferenceWorker.postMessage({
-                        type: 'inference',
-                        data: { frameBuffer }
+                    const hasMinFrames = videoProcessor.hasMinimumFrames();
+                    setHasMinimumFrames(prevState => {
+                        if (hasMinFrames !== prevState) {
+                            console.log('Minimum frames status changed:', hasMinFrames);
+                        }
+                        return hasMinFrames;
                     });
 
-                    componentsRef.current.lastInferenceTime = currentTime;
+                    // Run inference when we have enough frames
+                    if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
+                        const frameBuffer = videoProcessor.getFrameBuffer();
+                        console.log('Running inference with buffer size:', frameBuffer.length);
+
+                        inferenceWorker.postMessage({
+                            type: 'inference',
+                            data: { frameBuffer }
+                        });
+
+                        componentsRef.current.lastInferenceTime = currentTime;
+                    }
                 }
+            } catch (error) {
+                console.error('Error processing frame:', error);
             }
         }
 
-        // Only continue if still capturing
+        // Continue frame processing only if still capturing
         if (isCapturing) {
             componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
         }
@@ -544,14 +589,14 @@ const App: React.FC = () => {
                 />
 
                 <div className="charts-section">
-                    <VitalSignsChart
+                    <VitalSignsChartWrapper
                         title="Blood Volume Pulse"
                         data={vitalSigns.bvpSignal}
                         rate={vitalSigns.heartRate}
                         type="bvp"
                         isReady={hasMinimumFrames}
                     />
-                    <VitalSignsChart
+                    <VitalSignsChartWrapper
                         title="Respiratory Signal"
                         data={vitalSigns.respSignal}
                         rate={vitalSigns.respRate}

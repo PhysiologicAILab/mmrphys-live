@@ -33,17 +33,17 @@ export class VideoProcessor {
     private readonly minBufferForInference: number = 150; // 5 seconds at 30fps
 
     constructor(options: { frameBufferLength?: number } = {}) {
-        // Initialize video element with optimized settings
+        // Initialize video element
         this.videoElement = document.createElement('video');
         this.videoElement.playsInline = true;
         this.videoElement.muted = true;
         this.videoElement.autoplay = true;
 
-        // Initialize canvases with optimized contexts
+        // Initialize canvases
         this.croppedCanvas = this.createOptimizedCanvas(256, 256);
         this.processingCanvas = this.createOptimizedCanvas(9, 9);
 
-        // Get and validate contexts
+        // Get contexts
         const croppedCtx = this.croppedCanvas.getContext('2d', {
             willReadFrequently: true,
             alpha: false,
@@ -88,21 +88,13 @@ export class VideoProcessor {
     }
 
     private setupOptimizations(): void {
-        // Configure contexts for optimal performance
-        [this.croppedCtx, this.processingCtx].forEach(ctx => {
-            ctx.imageSmoothingEnabled = false;
-            ctx.imageSmoothingQuality = 'low';
-        });
+        // Configure processing context for efficiency
+        this.processingCtx.imageSmoothingEnabled = false;
+        this.processingCtx.imageSmoothingQuality = 'low';
 
-        // Create and apply oval mask for face cropping
-        this.croppedCtx.save();
-        this.croppedCtx.beginPath();
-        this.croppedCtx.ellipse(
-            128, 128, 124, 124,
-            0, 0, 2 * Math.PI
-        );
-        this.croppedCtx.clip();
-        this.croppedCtx.restore();
+        // Configure display context for quality
+        this.croppedCtx.imageSmoothingEnabled = true;
+        this.croppedCtx.imageSmoothingQuality = 'high';
     }
 
     private startMetricsTracking(): void {
@@ -113,7 +105,6 @@ export class VideoProcessor {
             if (elapsed >= 1000) {
                 this.metrics.fps = Math.round((this.frameCount * 1000) / elapsed);
                 this.metrics.bufferUsage = (this.frameBuffer.length / this.frameBufferLength) * 100;
-
                 this.frameCount = 0;
                 this.lastFrameTime = now;
             }
@@ -135,6 +126,7 @@ export class VideoProcessor {
                 }
             };
 
+            console.log('Requesting media stream with constraints:', constraints);
             this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
             this.videoElement.srcObject = this.mediaStream;
 
@@ -143,25 +135,22 @@ export class VideoProcessor {
                     reject(new Error('Video initialization timeout'));
                 }, 10000);
 
-                this.videoElement.onloadedmetadata = async () => {
-                    try {
-                        await this.videoElement.play();
-                        clearTimeout(timeout);
-                        resolve();
-                    } catch (error) {
-                        clearTimeout(timeout);
-                        reject(error);
-                    }
+                const onPlaying = () => {
+                    clearTimeout(timeout);
+                    this.videoElement.removeEventListener('playing', onPlaying);
+                    console.log('Video playing started:', {
+                        width: this.videoElement.videoWidth,
+                        height: this.videoElement.videoHeight
+                    });
+                    resolve();
                 };
 
-                this.videoElement.onerror = (event) => {
-                    clearTimeout(timeout);
-                    reject(new Error(`Video error: ${event.toString}`));
-                };
+                this.videoElement.addEventListener('playing', onPlaying);
+                this.videoElement.play().catch(reject);
             });
         } catch (error) {
             await this.cleanup();
-            throw new Error(`Failed to start video capture: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            throw error;
         }
     }
 
@@ -173,43 +162,19 @@ export class VideoProcessor {
         const currentTime = performance.now();
         const frameInterval = 1000 / this.targetFPS;
 
-        // Enforce frame rate limit
         if (currentTime - this.lastFrameTimestamp < frameInterval) {
             return null;
         }
         this.lastFrameTimestamp = currentTime;
 
-        const startTime = performance.now();
-
         try {
-            // Save context state before clearing
-            this.croppedCtx.save();
+            // Process for display (256x256)
+            this.processForDisplay(faceBox);
 
-            // Clear previous frame
-            this.croppedCtx.clearRect(0, 0, 256, 256);
-            this.processingCtx.clearRect(0, 0, 9, 9);
+            // Process for inference (9x9)
+            const processedFrame = this.processForInference(faceBox);
 
-            // Reapply clipping mask
-            this.croppedCtx.beginPath();
-            this.croppedCtx.ellipse(128, 128, 124, 124, 0, 0, 2 * Math.PI);
-            this.croppedCtx.clip();
-
-            // Draw cropped face
-            this.drawFaceRegion(faceBox);
-
-            // Restore context state
-            this.croppedCtx.restore();
-
-            // Update display immediately
-            this.updateDisplay();
-
-            // Get processed frame for inference
-            const processedFrame = this.processingCtx.getImageData(0, 0, 9, 9);
-
-            // Update metrics
             this.frameCount++;
-            this.metrics.processingTime = performance.now() - startTime;
-
             return processedFrame;
         } catch (error) {
             console.error('Frame processing error:', error);
@@ -218,8 +183,19 @@ export class VideoProcessor {
         }
     }
 
-    private drawFaceRegion(faceBox: FaceBox): void {
-        // Draw to cropped canvas (display size)
+    private processForDisplay(faceBox: FaceBox): void {
+        // Clear the canvas
+        this.croppedCtx.clearRect(0, 0, 256, 256);
+
+        // Save context state
+        this.croppedCtx.save();
+
+        // Create oval mask
+        this.croppedCtx.beginPath();
+        this.croppedCtx.ellipse(128, 128, 124, 124, 0, 0, 2 * Math.PI);
+        this.croppedCtx.clip();
+
+        // Draw face region at full resolution
         this.croppedCtx.drawImage(
             this.videoElement,
             faceBox.x,
@@ -232,21 +208,81 @@ export class VideoProcessor {
             256
         );
 
-        // Draw to processing canvas (9x9)
+        // Restore context state
+        this.croppedCtx.restore();
+
+        // Update display
+        this.updateDisplay();
+    }
+
+    private processForInference(faceBox: FaceBox): ImageData {
+        // Clear processing canvas
+        this.processingCtx.clearRect(0, 0, 9, 9);
+
+        // Draw directly to 9x9 canvas for inference
         this.processingCtx.drawImage(
-            this.croppedCanvas,
+            this.videoElement,
+            faceBox.x,
+            faceBox.y,
+            faceBox.width,
+            faceBox.height,
             0,
             0,
             9,
             9
         );
+
+        return this.processingCtx.getImageData(0, 0, 9, 9);
     }
 
     private updateDisplay(): void {
-        if (this.displayCtx && this.displayCanvas) {
-            this.displayCtx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
-            this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
+        if (!this.displayCtx || !this.displayCanvas) {
+            return;
         }
+
+        try {
+            // Draw the cropped face to display canvas
+            this.displayCtx.clearRect(0, 0, 256, 256);
+            this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
+        } catch (error) {
+            console.error('Error updating display:', error);
+        }
+    }
+
+    attachCanvas(canvas: HTMLCanvasElement): void {
+        console.log('Attaching canvas');
+        this.displayCanvas = canvas;
+        this.displayCtx = canvas.getContext('2d', {
+            alpha: false,
+            desynchronized: true
+        });
+
+        if (!this.displayCtx) {
+            throw new Error('Failed to get display canvas context');
+        }
+
+        // Set canvas size
+        canvas.width = 256;
+        canvas.height = 256;
+
+        // Configure context
+        this.displayCtx.imageSmoothingEnabled = true;
+        this.displayCtx.imageSmoothingQuality = 'high';
+
+        // Clear to black
+        this.displayCtx.fillStyle = 'black';
+        this.displayCtx.fillRect(0, 0, 256, 256);
+
+        console.log('Canvas attached successfully');
+    }
+
+    detachCanvas(): void {
+        if (this.displayCtx && this.displayCanvas) {
+            this.displayCtx.fillStyle = 'black';
+            this.displayCtx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        }
+        this.displayCanvas = null;
+        this.displayCtx = null;
     }
 
     updateFrameBuffer(frame: ImageData): void {
@@ -274,59 +310,24 @@ export class VideoProcessor {
         this.frameBuffer = [];
     }
 
-    attachCanvas(canvas: HTMLCanvasElement): void {
-        this.displayCanvas = canvas;
-        this.displayCtx = canvas.getContext('2d', {
-            alpha: false,
-            desynchronized: true
-        });
-
-        if (!this.displayCtx) {
-            throw new Error('Failed to get display canvas context');
-        }
-
-        this.displayCtx.imageSmoothingEnabled = true;
-        this.displayCtx.imageSmoothingQuality = 'high';
-
-        // Clear canvas to black initially
-        this.displayCtx.fillStyle = 'black';
-        this.displayCtx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-
-    detachCanvas(): void {
-        if (this.displayCtx && this.displayCanvas) {
-            // Clear canvas to black when detaching
-            this.displayCtx.fillStyle = 'black';
-            this.displayCtx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
-        }
-        this.displayCanvas = null;
-        this.displayCtx = null;
-    }
-
     async stopCapture(): Promise<void> {
         await this.cleanup();
     }
 
     private async cleanup(): Promise<void> {
-        // Stop all media tracks
         if (this.mediaStream) {
-            this.mediaStream.getTracks().forEach(track => {
-                track.stop(); // Explicitly stop each track
-            });
+            this.mediaStream.getTracks().forEach(track => track.stop());
             this.mediaStream = null;
         }
 
-        // Pause and reset video element
         this.videoElement.pause();
         this.videoElement.srcObject = null;
 
-        // Clear metrics interval
         if (this.metricsInterval) {
             clearInterval(this.metricsInterval);
             this.metricsInterval = null;
         }
 
-        // Reset frame buffer and metrics
         this.frameBuffer = [];
         this.metrics = {
             fps: 0,
@@ -335,17 +336,14 @@ export class VideoProcessor {
             droppedFrames: 0
         };
 
-        // Clear canvases
         this.croppedCtx.clearRect(0, 0, 256, 256);
         this.processingCtx.clearRect(0, 0, 9, 9);
 
-        // Clear display canvas if attached
         if (this.displayCtx && this.displayCanvas) {
             this.displayCtx.fillStyle = 'black';
             this.displayCtx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
         }
 
-        // Reset frame tracking
         this.lastFrameTime = 0;
         this.frameCount = 0;
         this.lastFrameTimestamp = 0;
