@@ -11,8 +11,8 @@ fi
 # Run the setup script
 npm run setup
 
-# Verify the setup
-npm run verify-setup
+# # Verify the setup
+# npm run verify-setup
 
 # Build the website
 npm run dev

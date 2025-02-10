@@ -47,13 +47,17 @@ interface WorkerMessage {
 }
 
 const INFERENCE_INTERVAL = 2000; // 2 seconds
-const REQUIRED_FRAMES = 90; // Number of frames needed for inference
+const REQUIRED_FRAMES = 150; // 5 seconds at 30fps
 const WORKER_TIMEOUT = 15000; // 15 seconds for worker initialization
+const MAX_FACE_MISSING_TIME = 3000; // 3 seconds before showing face detection warning
 
 const App: React.FC = () => {
     // State management
     const [isCapturing, setIsCapturing] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
+    const [hasMinimumFrames, setHasMinimumFrames] = useState(false);
+    const [faceDetected, setFaceDetected] = useState(false);
+    const [bufferProgress, setBufferProgress] = useState(0);
     const [status, setStatus] = useState<Status>({
         message: 'Initializing...',
         type: 'info',
@@ -66,6 +70,9 @@ const App: React.FC = () => {
         respSignal: [],
         lastUpdateTime: Date.now()
     });
+
+    // Last face detection time tracking
+    const lastFaceDetectionTime = useRef(0);
 
     // Refs for components that need to persist between renders
     const componentsRef = useRef<ComponentRefs>({
@@ -85,6 +92,22 @@ const App: React.FC = () => {
             timestamp: Date.now()
         });
     }, []);
+
+    // Update face detection status
+    const updateFaceDetectionStatus = useCallback((detected: boolean) => {
+        const currentTime = Date.now();
+
+        if (detected) {
+            lastFaceDetectionTime.current = currentTime;
+            if (!faceDetected) {
+                setFaceDetected(true);
+                updateStatus('Face detected', 'success');
+            }
+        } else if (currentTime - lastFaceDetectionTime.current > MAX_FACE_MISSING_TIME) {
+            setFaceDetected(false);
+            updateStatus('Please position your face in the frame', 'error');
+        }
+    }, [faceDetected, updateStatus]);
 
     // Device compatibility check
     const checkDeviceSupport = useCallback(async () => {
@@ -110,18 +133,30 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // Handle inference results
+    // Handle inference results with smooth updates
     const handleInferenceResults = useCallback((results: InferenceResult | undefined) => {
         if (!results) return;
 
-        setVitalSigns(prev => ({
-            ...prev,
-            heartRate: results.heartRate || prev.heartRate,
-            respRate: results.respRate || prev.respRate,
-            bvpSignal: results.bvp || prev.bvpSignal,
-            respSignal: results.resp || prev.respSignal,
-            lastUpdateTime: Date.now()
-        }));
+        setVitalSigns(prev => {
+            // Smooth transition for signals
+            const smoothFactor = 0.3;
+            const smoothSignal = (newData: number[], oldData: number[]) => {
+                if (oldData.length === 0) return newData;
+                return newData.map((value, i) =>
+                    oldData[i] !== undefined
+                        ? value * smoothFactor + oldData[i] * (1 - smoothFactor)
+                        : value
+                );
+            };
+
+            return {
+                heartRate: results.heartRate || prev.heartRate,
+                respRate: results.respRate || prev.respRate,
+                bvpSignal: smoothSignal(results.bvp, prev.bvpSignal),
+                respSignal: smoothSignal(results.resp, prev.respSignal),
+                lastUpdateTime: Date.now()
+            };
+        });
 
         if (componentsRef.current.signalProcessor) {
             componentsRef.current.signalProcessor.updateBuffers(results);
@@ -250,7 +285,7 @@ const App: React.FC = () => {
         }
     }, [checkDeviceSupport, initializeWorker, updateStatus]);
 
-    // Process video frames
+    // Process video frames with buffer tracking
     const processFrames = useCallback(() => {
         if (!isCapturing) return;
 
@@ -261,29 +296,36 @@ const App: React.FC = () => {
         const currentTime = Date.now();
         const faceBox = faceDetector.getCurrentFaceBox();
 
+        updateFaceDetectionStatus(!!faceBox);
+
         if (faceBox) {
             const processedFrame = videoProcessor.processFrame(faceBox);
 
             if (processedFrame) {
                 videoProcessor.updateFrameBuffer(processedFrame);
-            }
 
-            // Run inference if enough time has passed and we have enough frames
-            const frameBuffer = videoProcessor.getFrameBuffer();
-            if (frameBuffer.length >= REQUIRED_FRAMES &&
-                currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
+                // Update buffer progress
+                const progress = videoProcessor.getBufferUsagePercentage();
+                setBufferProgress(progress);
 
-                inferenceWorker.postMessage({
-                    type: 'inference',
-                    data: { frameBuffer }
-                });
+                const hasMinFrames = videoProcessor.hasMinimumFrames();
+                setHasMinimumFrames(hasMinFrames);
 
-                componentsRef.current.lastInferenceTime = currentTime;
+                // Run inference if conditions are met
+                if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
+                    const frameBuffer = videoProcessor.getFrameBuffer();
+                    inferenceWorker.postMessage({
+                        type: 'inference',
+                        data: { frameBuffer }
+                    });
+
+                    componentsRef.current.lastInferenceTime = currentTime;
+                }
             }
         }
 
         componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
-    }, [isCapturing]);
+    }, [isCapturing, updateFaceDetectionStatus]);
 
     // Start video capture
     const startCapture = useCallback(async () => {
@@ -325,6 +367,7 @@ const App: React.FC = () => {
 
             if (faceDetector) {
                 faceDetector.stopDetection();
+                await faceDetector.dispose();
             }
 
             setIsCapturing(false);
@@ -403,7 +446,7 @@ const App: React.FC = () => {
     return (
         <div className="app-container">
             <header className="app-header">
-                <h1>Vital Signs Monitor</h1>
+                <h1>Camera-based Remote Physiological Sensing</h1>
                 <Controls
                     isCapturing={isCapturing}
                     isInitialized={isInitialized}
@@ -416,6 +459,8 @@ const App: React.FC = () => {
             <main className="app-main">
                 <VideoDisplay
                     videoProcessor={componentsRef.current.videoProcessor}
+                    faceDetected={faceDetected}
+                    bufferProgress={bufferProgress}
                 />
 
                 <div className="charts-section">
@@ -424,12 +469,14 @@ const App: React.FC = () => {
                         data={vitalSigns.bvpSignal}
                         rate={vitalSigns.heartRate}
                         type="bvp"
+                        isReady={hasMinimumFrames}
                     />
                     <VitalSignsChart
                         title="Respiratory Signal"
                         data={vitalSigns.respSignal}
                         rate={vitalSigns.respRate}
                         type="resp"
+                        isReady={hasMinimumFrames}
                     />
                 </div>
             </main>

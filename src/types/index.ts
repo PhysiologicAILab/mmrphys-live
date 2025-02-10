@@ -1,3 +1,19 @@
+import { VideoProcessor } from '../utils/videoProcessor';
+
+export interface VideoDisplayProps {
+    videoProcessor: VideoProcessor | null;
+    faceDetected: boolean;
+    bufferProgress: number;
+}
+
+export interface VitalSignsChartProps {
+    title: string;
+    data: number[];
+    rate: number;
+    type: 'bvp' | 'resp';
+    isReady: boolean;
+}
+
 export interface VitalSigns {
     heartRate: number;
     respRate: number;
@@ -16,17 +32,6 @@ export interface ControlsProps {
     onStart: () => void;
     onStop: () => void;
     onExport: () => void;
-}
-
-export interface VideoDisplayProps {
-    videoProcessor: any; // Replace with specific type when converting videoProcessor
-}
-
-export interface VitalSignsChartProps {
-    title: string;
-    data: number[];
-    rate: number;
-    type: 'bvp' | 'resp';
 }
 
 export interface StatusMessageProps {

@@ -1,6 +1,6 @@
 import * as ort from 'onnxruntime-web';
 
-// Configure ONNX Runtime WebAssembly backend
+// Configure ONNX Runtime WebAssembly backend paths
 ort.env.wasm.wasmPaths = {
     'ort-wasm.wasm': '/ort/ort-wasm.wasm',
     'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
@@ -8,7 +8,7 @@ ort.env.wasm.wasmPaths = {
     'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
 };
 
-// Set up WASM flags
+// Configure WASM flags
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.simd = true;
 
@@ -111,48 +111,53 @@ export class VitalSignsModel {
     }
 
     async initialize(): Promise<void> {
+        if (this.isInitialized) return;
+
         try {
             // Ensure WebAssembly support
             if (!this.checkWebAssemblySupport()) {
                 throw new Error('WebAssembly is not supported in this browser');
             }
 
-            // Initialize ONNX Runtime first
+            // Configure ONNX Runtime environment
             await this.configureOrtEnvironment();
 
-            // Then load config and model
+            // Load config and model
             await this.loadConfig();
             await this.initializeSession();
 
             this.isInitialized = true;
+            console.log('Model initialized successfully');
         } catch (error) {
             console.error('Model initialization error:', error);
             throw new Error(`Model initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
     }
 
-    private async configureOrtEnvironment(onnxRuntime: typeof import('onnxruntime-web')): Promise<void> {
+    private async configureOrtEnvironment(): Promise<void> {
         try {
-            const env = onnxRuntime.env;
-            if (!env) {
-                throw new Error('ONNX Runtime environment not available');
-            }
-
-            // Configure WASM paths - use absolute paths from root
-            env.wasm.wasmPaths = {
+            // Configure WASM paths and verify they exist
+            const wasmPaths = {
                 'ort-wasm.wasm': '/ort/ort-wasm.wasm',
                 'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
                 'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
                 'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
             };
 
-            // Log the actual paths being used
-            console.log('WASM paths configuration:', env.wasm.wasmPaths);
+            // Verify WASM files are accessible
+            await Promise.all(
+                Object.values(wasmPaths).map(async path => {
+                    const response = await fetch(path);
+                    if (!response.ok) {
+                        throw new Error(`Failed to load WASM file: ${path}`);
+                    }
+                })
+            );
 
-            // Configure WASM flags
-            env.wasm.numThreads = 1;
-            env.wasm.simd = true;
-            env.wasm.proxy = false;
+            // Configure ONNX Runtime environment
+            ort.env.wasm.numThreads = 1;
+            ort.env.wasm.simd = true;
+            ort.env.wasm.wasmPaths = wasmPaths;
 
             console.log('ONNX Runtime environment configured successfully');
         } catch (error) {
@@ -160,7 +165,6 @@ export class VitalSignsModel {
             throw error;
         }
     }
-
 
     private async loadConfig(): Promise<void> {
         try {
@@ -204,15 +208,10 @@ export class VitalSignsModel {
 
             // Create session with explicit error handling
             console.log('Creating ONNX session...');
-            try {
-                this.session = await ort.InferenceSession.create(
-                    modelData,
-                    this.modelOptions
-                );
-            } catch (sessionError) {
-                console.error('Session creation error:', sessionError);
-                throw new Error('Failed to create ONNX session');
-            }
+            this.session = await ort.InferenceSession.create(
+                modelData,
+                this.modelOptions
+            );
 
             if (!this.session) {
                 throw new Error('Session creation failed');

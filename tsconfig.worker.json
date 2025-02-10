@@ -1,15 +1,35 @@
 {
-    "extends": "./tsconfig.json",
     "compilerOptions": {
+        "composite": true,
+        "target": "es2020",
+        "module": "esnext",
         "lib": [
-            "WebWorker",
-            "ES2020"
+            "dom",
+            "webworker",
+            "es2020"
         ],
-        "types": [
-            "vite/client"
-        ]
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "moduleResolution": "node",
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "noEmit": false,
+        "outDir": "./dist/worker",
+        "baseUrl": ".",
+        "paths": {
+            "@/*": [
+                "./src/*"
+            ]
+        }
     },
     "include": [
-        "src/workers/**/*"
+        "src/workers/**/*",
+        "src/utils/**/*",
+        "src/types/**/*"
+    ],
+    "exclude": [
+        "node_modules"
     ]
 }

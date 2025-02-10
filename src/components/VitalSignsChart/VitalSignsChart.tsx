@@ -9,9 +9,14 @@ import {
     Title,
     Tooltip,
     Legend,
-    Filler,
-    ChartOptions
+    Filler
 } from 'chart.js';
+import type {
+    ChartOptions as _ChartOptions,
+    ChartData as _ChartData,
+    ChartDataset as _ChartDataset,
+    TooltipItem as _TooltipItem
+} from 'chart.js/auto';
 
 // Register Chart.js components
 ChartJS.register(
@@ -25,21 +30,39 @@ ChartJS.register(
     Filler
 );
 
+// Explicitly define types
+type ChartOptions = _ChartOptions<'line'>;
+type ChartData = _ChartData<'line'>;
+type ChartDataset = _ChartDataset<'line', number[]>;
+type TooltipItem = _TooltipItem<'line'>;
+
 interface VitalSignsChartProps {
     title: string;
     data: number[];
     rate: number;
     type: 'bvp' | 'resp';
+    isReady?: boolean;
 }
 
 const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     title,
     data,
     rate,
-    type
+    type,
+    isReady = false
 }) => {
+    if (!isReady) {
+        return (
+            <div className="vital-signs-chart not-ready">
+                <div className="chart-placeholder">
+                    <p>Collecting data...</p>
+                </div>
+            </div>
+        );
+    }
+
     // Chart options using CSS variables
-    const options = useMemo<ChartOptions<'line'>>(() => ({
+    const options = useMemo<ChartOptions>(() => ({
         responsive: true,
         maintainAspectRatio: false,
         animation: false,
@@ -76,8 +99,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 padding: 10,
                 displayColors: false,
                 callbacks: {
-                    label: (context) => {
-                        return `Value: ${context.parsed.y.toFixed(3)}`;
+                    label: (context: TooltipItem) => {
+                        return `Value: ${(context.parsed.y as number).toFixed(3)}`;
                     }
                 }
             }
@@ -119,7 +142,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     }), [title, rate]);
 
     // Chart data using CSS variables
-    const chartData = useMemo(() => ({
+    const chartData = useMemo<ChartData>(() => ({
         labels: data.map((_, index) => (index / 30).toFixed(1)),
         datasets: [
             {
@@ -134,12 +157,12 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 pointHoverBackgroundColor: `var(--${type}-color)`,
                 pointHoverBorderColor: 'white',
                 pointHoverBorderWidth: 2
-            }
+            } as ChartDataset
         ]
     }), [data, type]);
 
     return (
-        <div className="vital-signs-chart">
+        <div className={`vital-signs-chart ${!isReady ? 'not-ready' : ''}`}>
             <div className="chart-container">
                 <Line
                     options={options}

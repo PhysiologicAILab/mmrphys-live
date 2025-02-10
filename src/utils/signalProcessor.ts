@@ -1,4 +1,5 @@
 import { ModelConfig } from './modelInference';
+import { SignalAnalyzer } from './signalAnalysis';
 
 export interface SignalBuffers {
     bvp: Float32Array;
@@ -28,6 +29,7 @@ export class SignalProcessor {
     private updateCount: number;
     private averageUpdateTime: number;
     private config: ModelConfig | null;
+    private readonly samplingRate: number = 30; // fps
 
     constructor() {
         this.maxSignalBufferSize = 900; // 30 seconds at 30fps
@@ -66,18 +68,26 @@ export class SignalProcessor {
         try {
             if (results.bvp?.length > 0) {
                 this.updateSignalBuffer(results.bvp, this.bvpBuffer, 'bvpBufferIndex');
+                // Recalculate heart rate using FFT analysis
+                const currentBvpSignal = this.getCurrentSignal(this.bvpBuffer, this.bvpBufferIndex);
+                const calculatedHeartRate = SignalAnalyzer.calculateRate(
+                    currentBvpSignal,
+                    this.samplingRate,
+                    'heart'
+                );
+                this.updateRateBuffer('heartRate', timestamp, calculatedHeartRate);
             }
 
             if (results.resp?.length > 0) {
                 this.updateSignalBuffer(results.resp, this.respBuffer, 'respBufferIndex');
-            }
-
-            if (this.isValidRate(results.heartRate)) {
-                this.updateRateBuffer('heartRate', timestamp, results.heartRate);
-            }
-
-            if (this.isValidRate(results.respRate)) {
-                this.updateRateBuffer('respRate', timestamp, results.respRate);
+                // Recalculate respiratory rate using FFT analysis
+                const currentRespSignal = this.getCurrentSignal(this.respBuffer, this.respBufferIndex);
+                const calculatedRespRate = SignalAnalyzer.calculateRate(
+                    currentRespSignal,
+                    this.samplingRate,
+                    'resp'
+                );
+                this.updateRateBuffer('respRate', timestamp, calculatedRespRate);
             }
 
             this.updateTimestamps(timestamp);
@@ -87,6 +97,17 @@ export class SignalProcessor {
             console.error('Error updating buffers:', error);
             throw new Error(`Buffer update failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
+    }
+
+    private getCurrentSignal(buffer: Float32Array, currentIndex: number): number[] {
+        // Get the last window of signal data in correct temporal order
+        const signal = new Array(this.maxSignalBufferSize);
+        for (let i = 0; i < this.maxSignalBufferSize; i++) {
+            const idx = (currentIndex - this.maxSignalBufferSize + i + this.maxSignalBufferSize)
+                % this.maxSignalBufferSize;
+            signal[i] = buffer[idx];
+        }
+        return signal;
     }
 
     private updateSignalBuffer(
@@ -100,14 +121,6 @@ export class SignalProcessor {
             buffer[this[indexKey]] = newData[i];
             this[indexKey] = (this[indexKey] + 1) % this.maxSignalBufferSize;
         }
-    }
-
-    private isValidRate(rate: number): boolean {
-        return typeof rate === 'number' &&
-            !isNaN(rate) &&
-            isFinite(rate) &&
-            rate > 0 &&
-            rate < 200;
     }
 
     private updateRateBuffer(
@@ -139,19 +152,38 @@ export class SignalProcessor {
         try {
             const { bvpData, respData } = this.getAlignedSignalData();
             const rates = this.getAlignedRateData();
-            const samplingRate = this.config?.sampling_rate ?? 30;
 
-            const headers = ['Timestamp', 'BVP', 'Respiratory', 'Heart Rate', 'Respiratory Rate', 'Sampling Rate'];
+            const headers = [
+                'Timestamp',
+                'BVP',
+                'Respiratory',
+                'Heart Rate',
+                'Respiratory Rate',
+                'Sampling Rate',
+                'BVP Signal Quality',
+                'Resp Signal Quality'
+            ];
             const rows = [headers.join(',')];
 
-            for (let i = 0; i < this.timestamps.length; i++) {
+            // Calculate signal quality metrics for each window
+            const windowSize = Math.min(this.samplingRate * 10, bvpData.length); // 10-second windows
+            for (let i = 0; i < this.timestamps.length; i += windowSize) {
+                const bvpWindow = Array.from(bvpData.slice(i, i + windowSize));
+                const respWindow = Array.from(respData.slice(i, i + windowSize));
+
+                if (bvpWindow.length < windowSize) break;
+
+                // Use FFT to get updated rate calculations
+                const updatedHeartRate = SignalAnalyzer.calculateRate(bvpWindow, this.samplingRate, 'heart');
+                const updatedRespRate = SignalAnalyzer.calculateRate(respWindow, this.samplingRate, 'resp');
+
                 const row = [
                     this.timestamps[i],
                     this.formatValue(bvpData[i], 6),
                     this.formatValue(respData[i], 6),
-                    this.formatValue(rates.heartRate[i], 2),
-                    this.formatValue(rates.respRate[i], 2),
-                    samplingRate
+                    this.formatValue(updatedHeartRate, 2),
+                    this.formatValue(updatedRespRate, 2),
+                    this.samplingRate,
                 ];
                 rows.push(row.join(','));
             }
@@ -168,7 +200,8 @@ export class SignalProcessor {
         const respData = new Float32Array(this.maxSignalBufferSize);
 
         for (let i = 0; i < this.maxSignalBufferSize; i++) {
-            const bufferIndex = (this.bvpBufferIndex - this.maxSignalBufferSize + i + this.maxSignalBufferSize) % this.maxSignalBufferSize;
+            const bufferIndex = (this.bvpBufferIndex - this.maxSignalBufferSize + i + this.maxSignalBufferSize)
+                % this.maxSignalBufferSize;
             bvpData[i] = this.bvpBuffer[bufferIndex];
             respData[i] = this.respBuffer[bufferIndex];
         }
@@ -188,12 +221,17 @@ export class SignalProcessor {
     }
 
     getLatestRates(): { heartRate: number; respRate: number; timestamp: string } {
-        const heartRates = this.rateBuffer.heartRate;
-        const respRates = this.rateBuffer.respRate;
+        // Get the most recent window of data for both signals
+        const currentBvpSignal = this.getCurrentSignal(this.bvpBuffer, this.bvpBufferIndex);
+        const currentRespSignal = this.getCurrentSignal(this.respBuffer, this.respBufferIndex);
+
+        // Calculate current rates using FFT analysis
+        const heartRate = SignalAnalyzer.calculateRate(currentBvpSignal, this.samplingRate, 'heart');
+        const respRate = SignalAnalyzer.calculateRate(currentRespSignal, this.samplingRate, 'resp');
 
         return {
-            heartRate: heartRates.length > 0 ? heartRates[heartRates.length - 1].value : 0,
-            respRate: respRates.length > 0 ? respRates[respRates.length - 1].value : 0,
+            heartRate,
+            respRate,
             timestamp: new Date().toISOString()
         };
     }

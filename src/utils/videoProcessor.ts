@@ -28,6 +28,9 @@ export class VideoProcessor {
     private lastFrameTime: number = 0;
     private frameCount: number = 0;
     private metricsInterval: number | null = null;
+    private lastFrameTimestamp: number = 0;
+    private readonly targetFPS: number = 30;
+    private readonly minBufferForInference: number = 150; // 5 seconds at 30fps
 
     constructor(options: { frameBufferLength?: number } = {}) {
         // Initialize video element with optimized settings
@@ -79,7 +82,6 @@ export class VideoProcessor {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-        // Add hardware acceleration hints
         canvas.style.transform = 'translateZ(0)';
         canvas.style.imageRendering = 'pixelated';
         return canvas;
@@ -100,6 +102,7 @@ export class VideoProcessor {
             0, 0, 2 * Math.PI
         );
         this.croppedCtx.clip();
+        this.croppedCtx.restore();
     }
 
     private startMetricsTracking(): void {
@@ -128,7 +131,7 @@ export class VideoProcessor {
                     facingMode: 'user',
                     width: { ideal: 640 },
                     height: { ideal: 480 },
-                    frameRate: { ideal: 30 }
+                    frameRate: { ideal: this.targetFPS }
                 }
             };
 
@@ -153,7 +156,7 @@ export class VideoProcessor {
 
                 this.videoElement.onerror = (event) => {
                     clearTimeout(timeout);
-                    reject(new Error(`Video error: ${event.type}`));
+                    reject(new Error(`Video error: ${event.toString}`));
                 };
             });
         } catch (error) {
@@ -162,60 +165,50 @@ export class VideoProcessor {
         }
     }
 
-    async stopCapture(): Promise<void> {
-        await this.cleanup();
-    }
-
-    private async cleanup(): Promise<void> {
-        if (this.mediaStream) {
-            this.mediaStream.getTracks().forEach(track => track.stop());
-            this.mediaStream = null;
-        }
-
-        if (this.metricsInterval) {
-            clearInterval(this.metricsInterval);
-            this.metricsInterval = null;
-        }
-
-        this.videoElement.srcObject = null;
-        this.frameBuffer = [];
-        this.metrics = {
-            fps: 0,
-            processingTime: 0,
-            bufferUsage: 0,
-            droppedFrames: 0
-        };
-
-        // Clear canvases
-        this.croppedCtx.clearRect(0, 0, 256, 256);
-        this.processingCtx.clearRect(0, 0, 9, 9);
-        this.displayCtx?.clearRect(0, 0, this.displayCanvas?.width || 0, this.displayCanvas?.height || 0);
-    }
-
     processFrame(faceBox: FaceBox): ImageData | null {
         if (!faceBox || !this.videoElement.videoWidth) {
             return null;
         }
 
+        const currentTime = performance.now();
+        const frameInterval = 1000 / this.targetFPS;
+
+        // Enforce frame rate limit
+        if (currentTime - this.lastFrameTimestamp < frameInterval) {
+            return null;
+        }
+        this.lastFrameTimestamp = currentTime;
+
         const startTime = performance.now();
 
         try {
+            // Save context state before clearing
+            this.croppedCtx.save();
+
             // Clear previous frame
             this.croppedCtx.clearRect(0, 0, 256, 256);
             this.processingCtx.clearRect(0, 0, 9, 9);
 
-            // Draw cropped face with optimal settings
+            // Reapply clipping mask
+            this.croppedCtx.beginPath();
+            this.croppedCtx.ellipse(128, 128, 124, 124, 0, 0, 2 * Math.PI);
+            this.croppedCtx.clip();
+
+            // Draw cropped face
             this.drawFaceRegion(faceBox);
 
-            // Get processed frame
+            // Restore context state
+            this.croppedCtx.restore();
+
+            // Update display immediately
+            this.updateDisplay();
+
+            // Get processed frame for inference
             const processedFrame = this.processingCtx.getImageData(0, 0, 9, 9);
 
             // Update metrics
             this.frameCount++;
             this.metrics.processingTime = performance.now() - startTime;
-
-            // Update display if attached
-            this.updateDisplay();
 
             return processedFrame;
         } catch (error) {
@@ -239,7 +232,7 @@ export class VideoProcessor {
             256
         );
 
-        // Draw to processing canvas (reduced size)
+        // Draw to processing canvas (9x9)
         this.processingCtx.drawImage(
             this.croppedCanvas,
             0,
@@ -265,8 +258,16 @@ export class VideoProcessor {
         }
     }
 
+    hasMinimumFrames(): boolean {
+        return this.frameBuffer.length >= this.minBufferForInference;
+    }
+
     getFrameBuffer(): ImageData[] {
         return this.frameBuffer;
+    }
+
+    getBufferUsagePercentage(): number {
+        return (this.frameBuffer.length / this.minBufferForInference) * 100;
     }
 
     clearFrameBuffer(): void {
@@ -286,11 +287,68 @@ export class VideoProcessor {
 
         this.displayCtx.imageSmoothingEnabled = true;
         this.displayCtx.imageSmoothingQuality = 'high';
+
+        // Clear canvas to black initially
+        this.displayCtx.fillStyle = 'black';
+        this.displayCtx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
     detachCanvas(): void {
+        if (this.displayCtx && this.displayCanvas) {
+            // Clear canvas to black when detaching
+            this.displayCtx.fillStyle = 'black';
+            this.displayCtx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        }
         this.displayCanvas = null;
         this.displayCtx = null;
+    }
+
+    async stopCapture(): Promise<void> {
+        await this.cleanup();
+    }
+
+    private async cleanup(): Promise<void> {
+        // Stop all media tracks
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach(track => {
+                track.stop(); // Explicitly stop each track
+            });
+            this.mediaStream = null;
+        }
+
+        // Pause and reset video element
+        this.videoElement.pause();
+        this.videoElement.srcObject = null;
+
+        // Clear metrics interval
+        if (this.metricsInterval) {
+            clearInterval(this.metricsInterval);
+            this.metricsInterval = null;
+        }
+
+        // Reset frame buffer and metrics
+        this.frameBuffer = [];
+        this.metrics = {
+            fps: 0,
+            processingTime: 0,
+            bufferUsage: 0,
+            droppedFrames: 0
+        };
+
+        // Clear canvases
+        this.croppedCtx.clearRect(0, 0, 256, 256);
+        this.processingCtx.clearRect(0, 0, 9, 9);
+
+        // Clear display canvas if attached
+        if (this.displayCtx && this.displayCanvas) {
+            this.displayCtx.fillStyle = 'black';
+            this.displayCtx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        }
+
+        // Reset frame tracking
+        this.lastFrameTime = 0;
+        this.frameCount = 0;
+        this.lastFrameTimestamp = 0;
     }
 
     getMetrics(): VideoProcessorMetrics {

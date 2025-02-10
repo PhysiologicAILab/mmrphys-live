@@ -17,8 +17,9 @@ if [ -f "$file" ] ; then
 fi
 
 # Install dependencies (if you haven't already)
-npm install face-api.js@0.22.2
-npm install onnxruntime-web@1.14.0
+npm install face-api.js@latest
+npm install onnxruntime-web@1.17.0
+
 npm install
 
 # Run the setup script

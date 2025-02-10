@@ -14,7 +14,7 @@ export class FaceDetector {
     private lastDetectionTime: number;
     private readonly detectionThrottleMs: number;
     private initializationPromise: Promise<void> | null;
-    private net: faceapi.TinyFaceDetector | null;
+    private readonly options: faceapi.TinyFaceDetectorOptions;
 
     constructor() {
         this.currentFaceBox = null;
@@ -23,7 +23,10 @@ export class FaceDetector {
         this.lastDetectionTime = 0;
         this.detectionThrottleMs = 1000;
         this.initializationPromise = null;
-        this.net = null;
+        this.options = new faceapi.TinyFaceDetectorOptions({
+            inputSize: 224,
+            scoreThreshold: 0.5
+        });
     }
 
     async initialize(): Promise<void> {
@@ -39,20 +42,13 @@ export class FaceDetector {
                 // Load model weights
                 await this.loadModelWeights();
 
-                // Initialize detector only after weights are loaded
-                this.net = new faceapi.TinyFaceDetector({
-                    inputSize: 224,
-                    scoreThreshold: 0.5
-                });
-
                 this.isInitialized = true;
                 console.log('Face detection model loaded successfully');
             } catch (error) {
                 this.isInitialized = false;
-                this.net = null;
                 this.initializationPromise = null;
                 console.error('Face detector initialization error:', error);
-                throw error;
+                throw new Error(`Face detector initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
         })();
 
@@ -90,9 +86,13 @@ export class FaceDetector {
         try {
             const modelPath = '/models/face-api';
 
-            // Ensure TinyFaceDetector is not already loaded
+            // Dispose of any existing model to prevent memory leaks
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
-                await faceapi.nets.tinyFaceDetector.dispose();
+                try {
+                    await faceapi.nets.tinyFaceDetector.dispose();
+                } catch {
+                    // Ignore any errors during disposal
+                }
             }
 
             // Load weights
@@ -108,7 +108,7 @@ export class FaceDetector {
     }
 
     async detectFace(videoElement: HTMLVideoElement): Promise<FaceBox | null> {
-        if (!this.isInitialized || !this.net) {
+        if (!this.isInitialized) {
             throw new Error('Face detector not initialized');
         }
 
@@ -120,7 +120,8 @@ export class FaceDetector {
         let input: HTMLCanvasElement | null = null;
         try {
             input = await faceapi.createCanvasFromMedia(videoElement);
-            const detection = await faceapi.detectSingleFace(input, this.net);
+            // Use detectSingleFace with TinyFaceDetector options
+            const detection = await faceapi.detectSingleFace(input, new faceapi.TinyFaceDetectorOptions(this.options));
 
             if (detection) {
                 const smoothingFactor = 0.3;
@@ -156,6 +157,7 @@ export class FaceDetector {
 
         this.stopDetection();
 
+        // Start continuous detection
         this.detectionInterval = window.setInterval(
             () => this.detectFace(videoElement),
             this.detectionThrottleMs
@@ -172,5 +174,27 @@ export class FaceDetector {
 
     getCurrentFaceBox(): FaceBox | null {
         return this.currentFaceBox;
+    }
+
+    isDetecting(): boolean {
+        return this.detectionInterval !== null;
+    }
+
+    async dispose(): Promise<void> {
+        this.stopDetection();
+
+        try {
+            // Safely dispose of the TinyFaceDetector model
+            if (faceapi.nets.tinyFaceDetector.isLoaded) {
+                await faceapi.nets.tinyFaceDetector.dispose();
+            }
+            this.isInitialized = false;
+            this.initializationPromise = null;
+        } catch (error) {
+            console.warn('Soft error during face detector disposal:', error);
+            // Do not rethrow to prevent breaking the application
+            this.isInitialized = false;
+            this.initializationPromise = null;
+        }
     }
 }
