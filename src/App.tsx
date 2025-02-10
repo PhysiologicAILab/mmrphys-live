@@ -117,6 +117,9 @@ const App: React.FC = () => {
 
         const devices = await navigator.mediaDevices.enumerateDevices();
         const hasCamera = devices.some(device => device.kind === 'videoinput');
+        const videoinput = devices.filter(device => device.kind === 'videoinput');
+
+        console.log('Available video input devices:', videoinput);
 
         if (!hasCamera) {
             throw new Error('No camera detected');
@@ -185,6 +188,7 @@ const App: React.FC = () => {
             };
 
             const handleMessage = (e: MessageEvent<WorkerMessage>) => {
+                console.log('Worker message received:', e.data); // Log all worker messages
                 if (e.data.type === 'init') {
                     cleanup();
 
@@ -340,6 +344,12 @@ const App: React.FC = () => {
             if (!videoProcessor || !faceDetector) {
                 throw new Error('Components not initialized');
             }
+
+            console.log('Starting video capture...'); // Add logging
+
+            // Check if video element exists and is valid
+            console.log('Video element:', videoProcessor.videoElement);
+            console.log('Media devices available:', await navigator.mediaDevices.enumerateDevices());
 
             updateStatus('Starting capture...', 'info');
 

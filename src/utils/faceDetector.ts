@@ -108,7 +108,10 @@ export class FaceDetector {
     }
 
     async detectFace(videoElement: HTMLVideoElement): Promise<FaceBox | null> {
+        console.log('Detecting face - initialized:', this.isInitialized);
+        console.log('Video element:', videoElement);
         if (!this.isInitialized) {
+            console.error('Face detector not initialized');
             throw new Error('Face detector not initialized');
         }
 

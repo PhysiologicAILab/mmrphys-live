@@ -9,8 +9,16 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
+        console.log('VideoDisplay - videoProcessor:', videoProcessor); // Debug log
+        console.log('VideoDisplay - canvasRef:', canvasRef.current); // Debug log
+
         if (canvasRef.current && videoProcessor) {
-            videoProcessor.attachCanvas(canvasRef.current);
+            try{
+                videoProcessor.attachCanvas(canvasRef.current);
+                console.log('Canvas attached successfully'); // Confirm attachment
+            } catch (error) {
+                console.error('Error attaching canvas:', error);
+            }
         }
 
         return () => {
