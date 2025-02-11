@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class OnnxConverter:
-    def __init__(self, model_path, onnx_path, config_path, num_frames=300,
+    def __init__(self, model_path, onnx_path, config_path, num_frames=151,
                  num_channels=3, height=9, width=9):
         self.model_path = Path(model_path)
         self.onnx_path = Path(onnx_path)
@@ -54,12 +54,12 @@ class OnnxConverter:
                 "bvp": {
                     "min_rate": 40,
                     "max_rate": 180,
-                    "buffer_size": 300
+                    "buffer_size": 150
                 },
                 "resp": {
                     "min_rate": 8,
                     "max_rate": 30,
-                    "buffer_size": 300
+                    "buffer_size": 150
                 }
             }
         }
@@ -121,8 +121,8 @@ class OnnxConverter:
             # Define dynamic axes
             dynamic_axes = {
                 'input': {0: 'batch_size', 2: 'frames'},
-                'rPPG': {0: 'batch_size'},
-                'rRSP': {0: 'batch_size'}
+                'rPPG': {0: 'batch_size', 2: 'frames'},
+                'rRSP': {0: 'batch_size', 2: 'frames'}
             }
 
             # Export to ONNX
@@ -131,7 +131,7 @@ class OnnxConverter:
                 dummy_input,
                 self.onnx_path,
                 export_params=True,
-                opset_version=11,
+                opset_version=12,
                 do_constant_folding=True,
                 input_names=['input'],
                 output_names=['rPPG', 'rRSP'],
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--onnx_path', type=str, required=True)
     parser.add_argument('--config_path', type=str, required=True)
-    parser.add_argument('--num_frames', type=int, default=300)
+    parser.add_argument('--num_frames', type=int, default=151)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--height', type=int, default=9)
     parser.add_argument('--width', type=int, default=9)

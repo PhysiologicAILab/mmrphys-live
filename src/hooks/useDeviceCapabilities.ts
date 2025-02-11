@@ -1,3 +1,4 @@
+// src/hooks/useDeviceCapabilities.ts
 import { useState, useEffect } from 'react';
 
 interface DeviceCapabilities {
@@ -31,24 +32,30 @@ export const useDeviceCapabilities = () => {
                 );
 
                 // Check WebAssembly
-                const hasWebAssembly = typeof WebAssembly === 'object';
+                const hasWebAssembly = typeof WebAssembly === 'object' &&
+                    typeof WebAssembly.instantiate === 'function';
 
                 // Get performance capabilities
                 const performance = {
                     memory: (navigator as any).deviceMemory || 4,
                     cores: navigator.hardwareConcurrency || 2,
-                    connection: ((navigator as any).connection as any)?.effectiveType || '4g'
+                    connection: (navigator as any).connection?.effectiveType || '4g'
                 };
 
-                const capabilities: DeviceCapabilities = {
+                // Check if device meets minimum requirements
+                const isCompatible = hasCamera &&
+                    hasWebGL &&
+                    hasWebAssembly &&
+                    performance.memory >= 2 &&
+                    performance.cores >= 2;
+
+                setCapabilities({
                     hasCamera,
                     hasWebGL,
                     hasWebAssembly,
                     performance,
-                    isCompatible: hasCamera && hasWebGL && hasWebAssembly
-                };
-
-                setCapabilities(capabilities);
+                    isCompatible
+                });
             } catch (error) {
                 console.error('Error checking device capabilities:', error);
                 setCapabilities(null);

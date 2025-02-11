@@ -1,5 +1,4 @@
 import React, { useMemo } from 'react';
-import { Line } from 'react-chartjs-2';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -11,7 +10,9 @@ import {
     Legend,
     Filler
 } from 'chart.js';
+import { Line } from 'react-chartjs-2';
 
+// Register ChartJS components
 ChartJS.register(
     CategoryScale,
     LinearScale,
@@ -28,7 +29,7 @@ interface VitalSignsChartProps {
     data: number[];
     rate: number;
     type: 'bvp' | 'resp';
-    isReady?: boolean;
+    isReady: boolean;
 }
 
 const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
@@ -42,111 +43,63 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         responsive: true,
         maintainAspectRatio: false,
         animation: {
-            duration: 0 // Disable animations for better performance
-        },
-        interaction: {
-            intersect: false,
-            mode: 'index'
-        },
-        plugins: {
-            legend: {
-                display: true,
-                position: 'top' as const,
-                labels: {
-                    color: 'var(--text-color)',
-                    boxWidth: 20,
-                    padding: 20
-                }
-            },
-            title: {
-                display: true,
-                text: `${title} - ${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
-                color: 'var(--text-color)',
-                font: {
-                    size: 16,
-                    weight: 'bold'
-                },
-                padding: {
-                    top: 10,
-                    bottom: 30
-                }
-            },
-            tooltip: {
-                enabled: true,
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                titleColor: 'white',
-                bodyColor: 'white',
-                borderColor: 'white',
-                borderWidth: 1,
-                padding: 10,
-                displayColors: true,
-                callbacks: {
-                    label: (context: any) => {
-                        const value = context.parsed.y;
-                        return `${type === 'bvp' ? 'BVP' : 'Resp'}: ${value.toFixed(3)}`;
-                    }
-                }
-            }
+            duration: 0
         },
         scales: {
             x: {
-                type: 'linear',
+                type: 'linear' as const,
                 display: true,
                 title: {
                     display: true,
-                    text: 'Time (seconds)',
-                    color: 'var(--text-color)',
-                    font: {
-                        weight: 'bold'
-                    }
+                    text: 'Time (seconds)'
                 },
-                grid: {
-                    display: true,
-                    color: 'rgba(0, 0, 0, 0.1)'
-                },
+                min: 0,
+                max: 10, // 10 seconds window
                 ticks: {
-                    color: 'var(--text-color)',
-                    maxRotation: 0,
-                    callback: (value: number) => value.toFixed(1)
+                    stepSize: 1
                 }
             },
             y: {
                 display: true,
                 title: {
                     display: true,
-                    text: type === 'bvp' ? 'Blood Volume Pulse (a.u.)' : 'Respiratory Signal (a.u.)',
-                    color: 'var(--text-color)',
-                    font: {
-                        weight: 'bold'
-                    }
+                    text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
                 },
-                grid: {
-                    display: true,
-                    color: 'rgba(0, 0, 0, 0.1)'
-                },
-                ticks: {
-                    color: 'var(--text-color)'
-                }
+                min: type === 'bvp' ? -2 : -1,
+                max: type === 'bvp' ? 2 : 1
+            }
+        },
+        plugins: {
+            legend: {
+                display: false
+            },
+            tooltip: {
+                enabled: true,
+                mode: 'index' as const,
+                intersect: false
+            },
+            title: {
+                display: true,
+                text: `${title} - ${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`
             }
         }
     }), [title, rate, type]);
 
     const chartData = useMemo(() => ({
-        labels: data.map((_, index) => (index / 30).toFixed(1)),
+        labels: data.map((_, i) => (i / 30).toFixed(1)),
         datasets: [
             {
                 label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
                 data: data,
-                borderColor: `var(--${type}-color)`,
-                backgroundColor: `var(--${type}-color-light)`,
+                borderColor: type === 'bvp' ? 'rgb(75, 192, 192)' : 'rgb(255, 99, 132)',
+                backgroundColor: type === 'bvp'
+                    ? 'rgba(75, 192, 192, 0.2)'
+                    : 'rgba(255, 99, 132, 0.2)',
                 fill: true,
                 tension: 0.4,
                 borderWidth: 2,
                 pointRadius: 0,
-                pointHoverRadius: 4,
-                pointHoverBackgroundColor: `var(--${type}-color)`,
-                pointHoverBorderColor: 'white',
-                pointHoverBorderWidth: 2
+                pointHoverRadius: 4
             }
         ]
     }), [data, type]);
@@ -155,8 +108,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         return (
             <div className="vital-signs-chart not-ready">
                 <div className="chart-placeholder">
-                    <p>Initializing signal processing...</p>
-                    <p>Please wait while we collect enough data</p>
+                    <p>Initializing...</p>
+                    <p>Collecting data</p>
                 </div>
             </div>
         );
@@ -182,15 +135,15 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
 };
 
 const getRateClass = (rate: number, type: 'bvp' | 'resp'): string => {
-    const ranges = {
-        bvp: { min: 40, max: 180 },
-        resp: { min: 8, max: 30 }
-    };
-
-    const { min, max } = ranges[type];
-    if (rate < min) return 'low';
-    if (rate > max) return 'high';
-    return 'normal';
+    if (type === 'bvp') {
+        if (rate < 60) return 'low';
+        if (rate > 100) return 'high';
+        return 'normal';
+    } else {
+        if (rate < 12) return 'low';
+        if (rate > 20) return 'high';
+        return 'normal';
+    }
 };
 
 export default VitalSignsChart;

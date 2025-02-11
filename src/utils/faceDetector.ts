@@ -18,6 +18,8 @@ export class FaceDetector {
     private isCapturing: boolean = false;
     private readonly smoothingFactor: number = 0.3;
     private temporaryCanvas: HTMLCanvasElement | null = null;
+    private errorCount: number = 0;
+    private readonly MAX_ERROR_THRESHOLD: number = 5;
 
     constructor() {
         this.options = new faceapi.TinyFaceDetectorOptions({
@@ -28,25 +30,43 @@ export class FaceDetector {
 
     setCapturingState(state: boolean): void {
         this.isCapturing = state;
+        console.log(`Capturing state set to: ${state}`);
     }
 
     async initialize(): Promise<void> {
+        // Prevent multiple simultaneous initialization attempts
         if (this.initializationPromise) {
             return this.initializationPromise;
         }
 
         this.initializationPromise = (async () => {
             try {
-                await this.setupFaceAPI();
+                // Reset error count on new initialization
+                this.errorCount = 0;
+
+                // Comprehensive setup steps
+                await this.setupFaceAPIEnvironment();
                 await this.loadModelWeights();
                 this.createTemporaryCanvas();
+
+                // Verify model is actually loaded
+                if (!this.verifyModelLoaded()) {
+                    throw new Error('Face detection model verification failed');
+                }
+
                 this.isInitialized = true;
                 console.log('Face detection model initialized successfully');
             } catch (error) {
+                // Detailed error logging
+                const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
+                console.error(`Face detector initialization failed: ${errorMessage}`);
+
+                // Cleanup and reset
                 this.cleanup();
                 this.initializationPromise = null;
-                console.error('Face detector initialization error:', error);
-                throw new Error(`Face detector initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+                // Rethrow to allow caller to handle initialization failure
+                throw new Error(`Face detector initialization failed: ${errorMessage}`);
             }
         })();
 
@@ -54,76 +74,127 @@ export class FaceDetector {
     }
 
     private createTemporaryCanvas(): void {
-        if (!this.temporaryCanvas) {
+        // Ensure canvas creation works in different environments
+        try {
             this.temporaryCanvas = document.createElement('canvas');
             this.temporaryCanvas.width = 224; // Match inputSize
             this.temporaryCanvas.height = 224;
+
+            // Verify canvas context
+            const ctx = this.temporaryCanvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Could not create 2D canvas context');
+            }
+        } catch (error) {
+            console.error('Failed to create temporary canvas:', error);
+            this.temporaryCanvas = null;
+            throw error;
         }
     }
 
-    private async setupFaceAPI(): Promise<void> {
-        if (typeof window === 'undefined') {
-            throw new Error('Browser environment required');
-        }
+    private async setupFaceAPIEnvironment(): Promise<void> {
+        // Comprehensive environment setup
+        try {
+            // Ensure browser environment
+            if (typeof window === 'undefined') {
+                throw new Error('Face detection requires a browser environment');
+            }
 
-        const env = {
-            Canvas: HTMLCanvasElement,
-            Image: HTMLImageElement,
-            ImageData: ImageData,
-            Video: HTMLVideoElement,
-            createCanvasElement: () => document.createElement('canvas'),
-            createImageElement: () => document.createElement('img')
-        };
+            // Robust environment configuration
+            const env = {
+                Canvas: HTMLCanvasElement,
+                Image: HTMLImageElement,
+                ImageData: ImageData,
+                Video: HTMLVideoElement,
+                createCanvasElement: () => document.createElement('canvas'),
+                createImageElement: () => document.createElement('img'),
 
-        faceapi.env.monkeyPatch(env);
+                // Add fallback fetch if not available
+                fetch: typeof fetch !== 'undefined'
+                    ? fetch
+                    : async () => {
+                        console.warn('Fetch not available, using mock implementation');
+                        return {
+                            ok: false,
+                            status: 404,
+                            json: async () => ({}),
+                            text: async () => ''
+                        } as Response;
+                    }
+            };
 
-        // Verify canvas support
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-            throw new Error('Canvas 2D context not supported');
+            // Patch face-api environment
+            faceapi.env.monkeyPatch(env);
+
+            // Verify canvas and context support
+            const testCanvas = document.createElement('canvas');
+            const ctx = testCanvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Canvas 2D context not supported');
+            }
+        } catch (error) {
+            console.error('Face API environment setup failed:', error);
+            throw error;
         }
     }
 
     private async loadModelWeights(): Promise<void> {
         try {
             const modelPath = '/models/face-api';
+            console.log(`Attempting to load face detection model from: ${modelPath}`);
 
-            // Dispose of existing model if loaded
+            // Dispose of existing model to prevent memory leaks
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
                 await faceapi.nets.tinyFaceDetector.dispose();
             }
 
+            // Load model weights
             await faceapi.nets.tinyFaceDetector.load(modelPath);
 
-            if (!faceapi.nets.tinyFaceDetector.isLoaded) {
-                throw new Error('Model failed to load');
-            }
+            console.log('Face detection model weights loaded successfully');
         } catch (error) {
-            throw new Error(`Model weights loading failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            const errorMessage = error instanceof Error
+                ? error.message
+                : 'Unknown model loading error';
+            console.error(`Model weights loading failed: ${errorMessage}`);
+            throw new Error(`Model weights loading failed: ${errorMessage}`);
         }
     }
 
+    private verifyModelLoaded(): boolean {
+        const isLoaded = faceapi.nets.tinyFaceDetector.isLoaded;
+        console.log(`Face detection model loaded: ${isLoaded}`);
+        return isLoaded;
+    }
+
     async detectFace(videoElement: HTMLVideoElement): Promise<FaceBox | null> {
+        // Check initialization and prerequisites
         if (!this.isInitialized || !this.temporaryCanvas) {
-            console.error('Face detector not properly initialized');
+            console.warn('Face detector not properly initialized');
             return this.currentFaceBox;
         }
 
+        // Throttle detection attempts
         const currentTime = Date.now();
         if (currentTime - this.lastDetectionTime < this.detectionThrottleMs) {
             return this.currentFaceBox;
         }
 
         try {
-            // Resize and draw video frame to temporary canvas
+            // Prepare canvas for detection
             const ctx = this.temporaryCanvas.getContext('2d');
             if (!ctx) throw new Error('Failed to get canvas context');
 
+            // Draw video frame to temporary canvas
             ctx.drawImage(videoElement, 0, 0, this.temporaryCanvas.width, this.temporaryCanvas.height);
+
+            // Detect face
             const detection = await faceapi.detectSingleFace(this.temporaryCanvas, this.options);
 
             if (detection) {
+                // Reset error count on successful detection
+                this.errorCount = 0;
+
                 // Scale detection box back to video dimensions
                 const scaleX = videoElement.videoWidth / this.temporaryCanvas.width;
                 const scaleY = videoElement.videoHeight / this.temporaryCanvas.height;
@@ -136,13 +207,35 @@ export class FaceDetector {
                 };
 
                 // Apply smoothing if we have a previous face box
-                this.currentFaceBox = this.currentFaceBox ? this.smoothFaceBox(scaledBox) : scaledBox;
+                this.currentFaceBox = this.currentFaceBox
+                    ? this.smoothFaceBox(scaledBox)
+                    : scaledBox;
+            } else {
+                // Increment error count for no face detection
+                this.errorCount++;
+
+                // Check if we've exceeded error threshold
+                if (this.errorCount >= this.MAX_ERROR_THRESHOLD) {
+                    console.warn('Exceeded maximum face detection errors');
+                    this.currentFaceBox = null;
+                }
             }
 
             this.lastDetectionTime = currentTime;
             return this.currentFaceBox;
         } catch (error) {
+            // Increment error count
+            this.errorCount++;
+
             console.error('Face detection error:', error);
+
+            // Check if we've exceeded error threshold
+            if (this.errorCount >= this.MAX_ERROR_THRESHOLD) {
+                console.warn('Exceeded maximum face detection errors');
+                this.currentFaceBox = null;
+                this.stopDetection();
+            }
+
             return this.currentFaceBox;
         }
     }
@@ -163,18 +256,23 @@ export class FaceDetector {
             throw new Error('Face detector not initialized');
         }
 
+        // Stop any existing detection
         this.stopDetection();
 
+        // Start continuous detection
         this.detectionInterval = window.setInterval(
             () => this.detectFace(videoElement),
             this.detectionThrottleMs
         );
+
+        console.log('Face detection started');
     }
 
     stopDetection(): void {
         if (this.detectionInterval) {
             clearInterval(this.detectionInterval);
             this.detectionInterval = null;
+            console.log('Face detection stopped');
         }
         this.currentFaceBox = null;
     }
@@ -188,27 +286,35 @@ export class FaceDetector {
     }
 
     private cleanup(): void {
+        // Comprehensive cleanup
         this.stopDetection();
         this.currentFaceBox = null;
         this.isInitialized = false;
         this.lastDetectionTime = 0;
+        this.errorCount = 0;
 
+        // Clear temporary canvas
         if (this.temporaryCanvas) {
             const ctx = this.temporaryCanvas.getContext('2d');
             if (ctx) ctx.clearRect(0, 0, this.temporaryCanvas.width, this.temporaryCanvas.height);
             this.temporaryCanvas = null;
         }
+
+        console.log('Face detector cleaned up');
     }
 
     async dispose(): Promise<void> {
-        this.cleanup();
-
         try {
+            // Stop detection and cleanup
+            this.cleanup();
+
+            // Dispose of model
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
                 await faceapi.nets.tinyFaceDetector.dispose();
+                console.log('Face detection model disposed');
             }
         } catch (error) {
-            console.warn('Error during face detector model disposal:', error);
+            console.warn('Error during face detector disposal:', error);
         }
     }
 }

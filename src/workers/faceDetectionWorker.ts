@@ -1,148 +1,134 @@
 // src/workers/faceDetectionWorker.ts
+/// <reference lib="webworker" />
+
 import * as faceapi from 'face-api.js';
 
-interface FaceDetectionMessage {
-    type: 'init' | 'detect';
-    imageData?: ImageData;
-    width?: number;
-    height?: number;
+interface DetectionResponse {
+    type: 'detect';
+    status: 'success' | 'error' | 'fallback';
+    detection?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    } | null;
+    fallbackMode?: boolean;
+    error?: string;
 }
 
-// Robust environment configuration for web workers
-const setupFaceAPIEnvironment = () => {
-    // Create a type-safe environment configuration
-    const env: Record<string, any> = {
-        isNodejs: () => false,
-        isBrowser: () => true,
-        platform: 'browser',
-        getEnv: () => ({
-            Canvas: OffscreenCanvas,
-            Image: typeof Image !== 'undefined' ? Image : class { } as any,
-            ImageData: ImageData,
-            createCanvasElement: (width = 1, height = 1) => {
-                return new OffscreenCanvas(width, height);
-            },
-            createImageElement: () => {
-                // Minimal image-like object
-                return {
-                    width: 0,
-                    height: 0,
-                    src: '',
-                    addEventListener: () => { },
-                    removeEventListener: () => { },
-                    complete: true
-                };
-            }
-        }),
-        monkeyPatch: () => { } // Add explicit monkeyPatch method
-    };
-
-    // Patch the face-api environment
-    try {
-        // Use Object.assign to safely add properties
-        Object.assign(faceapi.env, env);
-    } catch (error) {
-        console.error('Failed to configure face-api environment:', error);
-    }
-
-    return env;
-};
-
-const options = new faceapi.TinyFaceDetectorOptions({
-    inputSize: 320,
-    scoreThreshold: 0.3
-});
-
 let isInitialized = false;
+let model: faceapi.TinyFaceDetectorOptions;
 
-self.onmessage = async (e: MessageEvent<FaceDetectionMessage>) => {
+async function initializeDetector() {
     try {
-        switch (e.data.type) {
-            case 'init':
-                if (!isInitialized) {
-                    // Explicitly set up the environment
-                    setupFaceAPIEnvironment();
+        // Configure environment
+        const env = {
+            Canvas: typeof OffscreenCanvas !== 'undefined' ? OffscreenCanvas : HTMLCanvasElement,
+            Image: typeof Image !== 'undefined' ? Image : class { },
+            ImageData: ImageData,
+            createCanvasElement: () => new OffscreenCanvas(1, 1),
+            createImageElement: () => ({ width: 0, height: 0 }),
+        };
 
-                    try {
-                        // Manually create a mock canvas for environment
-                        const mockCanvas = new OffscreenCanvas(320, 240);
-                        mockCanvas.getContext('2d');
+        // @ts-ignore - Patch environment
+        if (!faceapi.env) faceapi.env = {};
+        Object.assign(faceapi.env, env);
 
-                        // Load model weights with explicit paths
-                        const modelPath = '/models/face-api';
-                        await faceapi.nets.tinyFaceDetector.load(modelPath);
+        // Load model
+        await faceapi.nets.tinyFaceDetector.load('/models/face-api');
 
-                        isInitialized = true;
-                        self.postMessage({ type: 'init', status: 'success' });
-                    } catch (loadError) {
-                        console.error('Model loading error:', loadError);
-                        self.postMessage({
-                            type: 'init',
-                            status: 'error',
-                            error: loadError instanceof Error ? loadError.message : 'Unknown model loading error'
-                        });
-                    }
-                }
-                break;
+        // Initialize detector options
+        model = new faceapi.TinyFaceDetectorOptions({
+            inputSize: 320,
+            scoreThreshold: 0.3
+        });
 
-            case 'detect':
-                if (!isInitialized) {
-                    throw new Error('Face detector not initialized');
-                }
-
-                const { imageData, width, height } = e.data;
-                if (!imageData || !width || !height) {
-                    // Return center crop information when no face is detected
-                    self.postMessage({
-                        type: 'detect',
-                        status: 'fallback',
-                        detection: null,
-                        fallbackMode: true
-                    });
-                    return;
-                }
-
-                // Create an offscreen canvas
-                const canvas = new OffscreenCanvas(width, height);
-                const ctx = canvas.getContext('2d');
-                if (!ctx) {
-                    throw new Error('Could not get canvas context');
-                }
-
-                // Draw image data to canvas
-                ctx.putImageData(imageData, 0, 0);
-
-                try {
-                    // Attempt face detection
-                    const detection = await faceapi.detectSingleFace(canvas as any, options);
-
-                    self.postMessage({
-                        type: 'detect',
-                        status: 'success',
-                        detection: detection ? {
-                            x: detection.box.x,
-                            y: detection.box.y,
-                            width: detection.box.width,
-                            height: detection.box.height
-                        } : null,
-                        fallbackMode: !detection
-                    });
-                } catch (detectionError) {
-                    console.error('Face detection error:', detectionError);
-                    self.postMessage({
-                        type: 'detect',
-                        status: 'error',
-                        error: detectionError instanceof Error ? detectionError.message : 'Unknown detection error'
-                    });
-                }
-                break;
-        }
+        isInitialized = true;
+        self.postMessage({ type: 'init', status: 'success' });
     } catch (error) {
-        console.error('Face detection worker global error:', error);
         self.postMessage({
-            type: e.data.type,
+            type: 'init',
             status: 'error',
             error: error instanceof Error ? error.message : 'Unknown error'
         });
+    }
+}
+
+async function detectFace(imageData: ImageData): Promise<DetectionResponse> {
+    if (!isInitialized) {
+        return {
+            type: 'detect',
+            status: 'error',
+            error: 'Face detector not initialized'
+        };
+    }
+
+    try {
+        // Create canvas and draw image
+        const canvas = new OffscreenCanvas(imageData.width, imageData.height);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Failed to get canvas context');
+
+        ctx.putImageData(imageData, 0, 0);
+
+        // Detect face
+        const detection = await faceapi.detectSingleFace(canvas as any, model);
+
+        if (detection) {
+            return {
+                type: 'detect',
+                status: 'success',
+                detection: {
+                    x: detection.box.x,
+                    y: detection.box.y,
+                    width: detection.box.width,
+                    height: detection.box.height
+                }
+            };
+        }
+
+        // Return fallback mode if no face detected
+        return {
+            type: 'detect',
+            status: 'fallback',
+            detection: null,
+            fallbackMode: true
+        };
+    } catch (error) {
+        return {
+            type: 'detect',
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Detection failed'
+        };
+    }
+}
+
+// Message handler
+self.onmessage = async (e: MessageEvent) => {
+    switch (e.data.type) {
+        case 'init':
+            await initializeDetector();
+            break;
+
+        case 'detect':
+            if (!e.data.imageData) {
+                self.postMessage({
+                    type: 'detect',
+                    status: 'error',
+                    error: 'No image data provided'
+                });
+                return;
+            }
+
+            const response = await detectFace(e.data.imageData);
+            self.postMessage(response);
+            break;
+
+        default:
+            self.postMessage({
+                type: 'error',
+                status: 'error',
+                error: 'Unknown message type'
+            });
     }
 };

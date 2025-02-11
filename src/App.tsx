@@ -1,690 +1,300 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { VideoProcessor } from './utils/videoProcessor';
-import { FaceDetector } from './utils/faceDetector';
-import { SignalProcessor } from './utils/signalProcessor';
-import VideoDisplay from './components/VideoDisplay';
-import Controls from './components/Controls';
-import VitalSignsChartWrapper from './components/VitalSignsChartWrapper';
-import StatusMessage from './components/StatusMessage';
-import type { InferenceResult } from './utils/modelInference';
-
-// Define types for component state and refs
-interface VitalSigns {
-    heartRate: number;
-    respRate: number;
-    bvpSignal: number[];
-    respSignal: number[];
-    lastUpdateTime?: number;
-}
-
-interface Status {
-    message: string;
-    type: 'info' | 'success' | 'error' | 'warning';
-    timestamp?: number;
-}
-
-interface ComponentRefs {
-    videoProcessor: VideoProcessor | null;
-    faceDetector: FaceDetector | null;
-    signalProcessor: SignalProcessor | null;
-    inferenceWorker: Worker | null;
-    animationFrameId: number | null;
-    lastInferenceTime: number;
-}
-
-interface WorkerMessage {
-    type: string;
-    status: 'success' | 'error';
-    results?: InferenceResult;
-    error?: string;
-    performanceStats?: {
-        totalInferences: number;
-        averageProcessingTime: number;
-        lastProcessingTime: number;
-        errorCount: number;
-        timestamp: number;
-    };
-}
-
-const INFERENCE_INTERVAL = 2000; // 2 seconds
-const WORKER_TIMEOUT = 15000; // 15 seconds for worker initialization
-const MAX_FACE_MISSING_TIME = 3000; // 3 seconds before showing face detection warning
-const FALLBACK_DETECTION_INTERVAL = 1000; // 1 second for center crop detection fallback
+// src/App.tsx
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { VideoDisplay, Controls, VitalSignsChart, StatusMessage } from '@/components';
+import { useDeviceCapabilities } from '@/hooks/useDeviceCapabilities';
+import { VideoProcessor } from '@/utils/videoProcessor';
+import { VitalSigns, StatusMessage as StatusMessageType } from '@/types';
 
 const App: React.FC = () => {
     // State management
-    const [isCapturing, setIsCapturing] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
-    const [hasMinimumFrames, setHasMinimumFrames] = useState(false);
-    const [faceDetected, setFaceDetected] = useState(false);
+    const [isCapturing, setIsCapturing] = useState(false);
     const [bufferProgress, setBufferProgress] = useState(0);
-    const [status, setStatus] = useState<Status>({
-        message: 'Initializing...',
-        type: 'info',
-        timestamp: Date.now()
+    const [statusMessage, setStatusMessage] = useState<StatusMessageType>({
+        message: 'Initializing system...',
+        type: 'info'
     });
+
+    // Vital signs state
     const [vitalSigns, setVitalSigns] = useState<VitalSigns>({
         heartRate: 0,
         respRate: 0,
         bvpSignal: [],
-        respSignal: [],
-        lastUpdateTime: Date.now()
+        respSignal: []
     });
 
-    // Last face detection time tracking
-    const lastFaceDetectionTime = useRef(0);
-    const fallbackDetectionInterval = useRef<number | null>(null);
+    // Refs for processors and workers
+    const videoProcessorRef = useRef<VideoProcessor | null>(null);
+    const inferenceWorkerRef = useRef<Worker | null>(null);
+    const progressIntervalRef = useRef<number | null>(null);
 
-    // Add a new ref for signal processing worker
-    const signalProcessingWorkerRef = useRef<Worker | null>(null);
+    // Device capabilities check
+    const { capabilities, isChecking } = useDeviceCapabilities();
 
-    // Refs for components that need to persist between renders
-    const componentsRef = useRef<ComponentRefs>({
-        videoProcessor: null,
-        faceDetector: null,
-        signalProcessor: null,
-        inferenceWorker: null,
-        animationFrameId: null,
-        lastInferenceTime: 0
-    });
-
-    const logComponentState = useCallback(() => {
-        const { videoProcessor, faceDetector, inferenceWorker } = componentsRef.current;
-        console.log('Component State:', {
-            isCapturing,
-            hasMinimumFrames,
-            faceDetected,
-            bufferProgress,
-            videoProcessorActive: videoProcessor?.isCapturing(),
-            faceDetectorActive: faceDetector?.isDetecting(),
-            hasWorker: !!inferenceWorker,
-            signalLengths: {
-                bvp: vitalSigns.bvpSignal.length,
-                resp: vitalSigns.respSignal.length
-            }
-        });
-    }, [isCapturing, hasMinimumFrames, faceDetected, bufferProgress, vitalSigns]);
-
-    // Add this effect to monitor state changes
+    // Initialize system
     useEffect(() => {
-        logComponentState();
-    }, [isCapturing, hasMinimumFrames, faceDetected, bufferProgress, logComponentState]);
-
-    // Update status with timestamp
-    const updateStatus = useCallback((message: string, type: Status['type']) => {
-        setStatus({
-            message,
-            type,
-            timestamp: Date.now()
-        });
-    }, []);
-
-    // Update face detection status with fallback mechanism
-    const updateFaceDetectionStatus = useCallback((detected: boolean) => {
-        const currentTime = Date.now();
-
-        if (detected) {
-            lastFaceDetectionTime.current = currentTime;
-
-            // Clear fallback interval if face is detected
-            if (fallbackDetectionInterval.current) {
-                clearInterval(fallbackDetectionInterval.current);
-                fallbackDetectionInterval.current = null;
-            }
-
-            if (!faceDetected) {
-                setFaceDetected(true);
-                updateStatus('Face detected', 'success');
-            }
-        } else {
-            // If face hasn't been detected for too long, switch to center crop
-            if (currentTime - lastFaceDetectionTime.current > MAX_FACE_MISSING_TIME) {
-                setFaceDetected(false);
-                updateStatus('Using center crop for processing', 'warning');
-
-                // Set up fallback detection interval if not already set
-                if (!fallbackDetectionInterval.current) {
-                    fallbackDetectionInterval.current = window.setInterval(() => {
-                        const { videoProcessor } = componentsRef.current;
-                        if (videoProcessor) {
-                            videoProcessor.setCropMode('center');
-                        }
-                    }, FALLBACK_DETECTION_INTERVAL);
-                }
-            }
-        }
-    }, [faceDetected, updateStatus]);
-
-
-    // Device compatibility check
-    const checkDeviceSupport = useCallback(async () => {
-        if (!navigator.mediaDevices?.getUserMedia) {
-            throw new Error('Camera access not supported in this browser');
-        }
-
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const hasCamera = devices.some(device => device.kind === 'videoinput');
-        const videoinput = devices.filter(device => device.kind === 'videoinput');
-
-        console.log('Available video input devices:', videoinput);
-
-        if (!hasCamera) {
-            throw new Error('No camera detected');
-        }
-
-        // Check for required WebAssembly features
-        if (typeof WebAssembly !== 'object') {
-            throw new Error('WebAssembly not supported in this browser');
-        }
-
-        // Check for SharedArrayBuffer support (needed for ONNX Runtime)
-        if (typeof SharedArrayBuffer !== 'function') {
-            throw new Error('SharedArrayBuffer not supported in this browser');
-        }
-    }, []);
-
-    // Handle inference results with smooth updates
-    const handleInferenceResults = useCallback((results: InferenceResult | undefined) => {
-        if (!results || !isCapturing) return;
-
-        console.log('Processing inference results:', {
-            heartRate: results.heartRate,
-            respRate: results.respRate,
-            bvpLength: results.bvp.length,
-            respLength: results.resp.length
-        });
-
-        // Validate results before updating
-        if (!results.bvp?.length || !results.resp?.length) {
-            console.warn('Invalid inference results received');
-            return;
-        }
-
-        setVitalSigns(prev => {
-            return {
-                heartRate: results.heartRate || prev.heartRate,
-                respRate: results.respRate || prev.respRate,
-                bvpSignal: [...results.bvp], // Create new array to ensure re-render
-                respSignal: [...results.resp],
-                lastUpdateTime: Date.now()
-            };
-        });
-
-        if (componentsRef.current.signalProcessor) {
+        const initializeSystem = async () => {
             try {
-                componentsRef.current.signalProcessor.updateBuffers(results);
-            } catch (error) {
-                console.error('Error updating signal buffers:', error);
-            }
-        }
-    }, [isCapturing]);
-
-
-
-    const initializeWorker = useCallback(async () => {
-        return new Promise<void>((resolve, reject) => {
-            let initTimeoutId: NodeJS.Timeout;
-            let worker: Worker | null = null;
-
-            const cleanup = () => {
-                if (initTimeoutId) clearTimeout(initTimeoutId);
-                if (worker) {
-                    worker.removeEventListener('message', handleMessage);
-                    worker.removeEventListener('error', handleError);
+                if (!capabilities?.isCompatible) {
+                    throw new Error('Device not compatible');
                 }
-            };
 
-            const handleError = (event: ErrorEvent) => {
-                cleanup();
-                const errorMessage = event.message || 'Unknown worker error';
-                console.error('Worker initialization error:', errorMessage, event);
-                worker?.terminate();
-                reject(new Error(errorMessage));
-            };
+                // Initialize video processor
+                videoProcessorRef.current = new VideoProcessor();
 
-            const handleMessage = (e: MessageEvent<WorkerMessage>) => {
-                console.log('Worker message received:', e.data);
-                if (e.data.type === 'init') {
-                    cleanup();
-
-                    if (e.data.status === 'success') {
-                        componentsRef.current.inferenceWorker = worker;
-
-                        // Set up normal operation message handler
-                        worker!.onmessage = (e: MessageEvent<WorkerMessage>) => {
-                            if (e.data.type === 'inference' && e.data.status === 'success') {
-                                handleInferenceResults(e.data.results);
-                            } else if (e.data.status === 'error') {
-                                console.error('Worker inference error:', e.data.error);
-                                updateStatus(`Inference error: ${e.data.error}`, 'error');
-                            }
-                        };
-
-                        resolve();
-                    } else {
-                        const error = new Error(e.data.error || 'Worker initialization failed');
-                        worker?.terminate();
-                        reject(error);
-                    }
-                }
-            };
-
-            try {
-                // Create worker
-                worker = new Worker(
+                // Initialize inference worker
+                const worker = new Worker(
                     new URL('./workers/inferenceWorker.ts', import.meta.url),
                     { type: 'module' }
                 );
 
-                // Add event listeners
-                worker.addEventListener('message', handleMessage);
-                worker.addEventListener('error', handleError);
+                // Set up worker message handler
+                worker.onmessage = (e) => {
+                    if (e.data.type === 'init') {
+                        if (e.data.status === 'success') {
+                            setIsInitialized(true);
+                            setStatusMessage({
+                                message: 'System ready',
+                                type: 'success'
+                            });
+                        } else {
+                            console.error('Initialization failed:', e.data.error);
+                            throw new Error(`Initialization failed: ${e.data.error}`);
+                        }
+                    } else if (e.data.type === 'inference' && e.data.status === 'success') {
+                        handleInferenceResults(e.data.results);
+                    }
+                };
 
-                // Set initialization timeout
-                initTimeoutId = setTimeout(() => {
-                    cleanup();
-                    worker?.terminate();
-                    reject(new Error('Worker initialization timed out'));
-                }, WORKER_TIMEOUT);
+                inferenceWorkerRef.current = worker;
 
-                // Start initialization
+                // Initialize worker
                 worker.postMessage({ type: 'init' });
 
             } catch (error) {
-                cleanup();
-                reject(error instanceof Error ? error : new Error('Failed to create worker'));
-            }
-        });
-    }, [handleInferenceResults, updateStatus]);
-
-
-    // Initialization of all components
-    const initializeComponents = useCallback(async () => {
-        try {
-            updateStatus('Checking device compatibility...', 'info');
-            await checkDeviceSupport();
-
-            updateStatus('Loading required resources...', 'info');
-            const [config] = await Promise.all([
-                fetch('/models/rphys/config.json', {
-                    cache: 'force-cache',
-                    credentials: 'same-origin'
-                }).then(res => res.json()),
-                fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
-                    cache: 'force-cache',
-                    credentials: 'same-origin'
-                }),
-                fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
-                    cache: 'force-cache',
-                    credentials: 'same-origin'
-                })
-            ]);
-
-            // Initialize components
-            componentsRef.current.videoProcessor = new VideoProcessor();
-            // // Switch to center crop mode
-            // componentsRef.current.videoProcessor.setCropMode('center');
-
-            // // Switch back to face detection mode
-            // componentsRef.current.videoProcessor.setCropMode('face');
-
-            // // Reset to previous mode
-            // componentsRef.current.videoProcessor.resetCropMode();
-
-
-            updateStatus('Initializing face detection...', 'info');
-            const faceDetector = new FaceDetector();
-            await faceDetector.initialize();
-            componentsRef.current.faceDetector = faceDetector;
-
-            componentsRef.current.signalProcessor = new SignalProcessor();
-
-            signalProcessingWorkerRef.current = new Worker(
-                new URL('./workers/signalProcessingWorker.ts', import.meta.url),
-                { type: 'module' }
-            );
-
-            // Setup message handler for signal processing
-            signalProcessingWorkerRef.current.onmessage = (e) => {
-                if (e.data.type === 'process' && e.data.status === 'success') {
-                    setVitalSigns(prev => ({
-                        ...prev,
-                        heartRate: e.data.heartRate,
-                        respRate: e.data.respRate
-                    }));
-                }
-            };
-
-            // Configure components
-            if (componentsRef.current.signalProcessor) {
-                componentsRef.current.signalProcessor.setConfig(config);
-            }
-
-            updateStatus('Initializing face detection...', 'info');
-            await componentsRef.current.faceDetector.initialize();
-
-            updateStatus('Initializing inference worker...', 'info');
-            await initializeWorker();
-
-            setIsInitialized(true);
-            updateStatus('System ready', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
-            updateStatus(`Initialization failed: ${errorMessage}`, 'error');
-            console.error('Initialization error:', error);
-        }
-    }, [checkDeviceSupport, initializeWorker, updateStatus]);
-
-    // Process video frames with buffer tracking
-    // Process video frames with buffer tracking
-    const processFrames = useCallback(() => {
-        if (!isCapturing) {
-            console.log('Frame processing stopped');
-            return;
-        }
-
-        const { videoProcessor, faceDetector, inferenceWorker, lastInferenceTime } = componentsRef.current;
-
-        if (!videoProcessor || !inferenceWorker) {
-            console.warn('Missing required components for frame processing');
-            return;
-        }
-
-        const currentTime = Date.now();
-
-        // Try to get face box, but allow center crop as fallback
-        const faceBox = faceDetector?.getCurrentFaceBox() || null;
-
-        // If no face detected, set center crop mode
-        if (!faceBox) {
-            updateStatus('Using center crop for processing', 'warning');
-            componentsRef.current.videoProcessor.setCropMode('center');
-        }
-
-        // Update face detection status
-        updateFaceDetectionStatus(!!faceBox);
-
-        try {
-            // Process frame with either face box or center crop
-            const processedFrame = videoProcessor.processFrame(faceBox);
-
-            if (processedFrame) {
-                videoProcessor.updateFrameBuffer(processedFrame);
-
-                const progress = videoProcessor.getBufferUsagePercentage();
-                setBufferProgress(progress);
-
-                const hasMinFrames = videoProcessor.hasMinimumFrames();
-                if (hasMinFrames !== hasMinimumFrames) {
-                    setHasMinimumFrames(hasMinFrames);
-                    console.log(`Minimum frames reached: ${hasMinFrames}`);
-                }
-
-                // Run inference when we have enough frames
-                if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
-                    const frameBuffer = videoProcessor.getFrameBuffer();
-                    inferenceWorker.postMessage({
-                        type: 'inference',
-                        data: { frameBuffer }
-                    });
-                    componentsRef.current.lastInferenceTime = currentTime;
-                }
-            }
-        } catch (error) {
-            console.error('Error processing frame:', error);
-        }
-
-        // Continue frame processing only if still capturing
-        if (isCapturing) {
-            componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
-        }
-    }, [isCapturing, updateFaceDetectionStatus, hasMinimumFrames]);
-
-    // Start video capture
-    const startCapture = useCallback(async () => {
-        try {
-            const { videoProcessor, faceDetector } = componentsRef.current;
-
-            if (!videoProcessor || !faceDetector) {
-                throw new Error('Components not initialized');
-            }
-
-            updateStatus('Starting capture...', 'info');
-
-            // Set capturing state before starting detection
-            faceDetector.setCapturingState(true);
-
-            // First start video capture
-            await videoProcessor.startCapture();
-            console.log('Video capture started');
-
-            // Ensure video is playing before starting face detection
-            await new Promise<void>((resolve) => {
-                const checkVideo = () => {
-                    if (videoProcessor.videoElement.readyState >= 2 &&
-                        videoProcessor.videoElement.videoWidth > 0) {
-                        resolve();
-                    } else {
-                        requestAnimationFrame(checkVideo);
-                    }
-                };
-                checkVideo();
-            });
-
-            // Clear frame buffer before starting
-            videoProcessor.clearFrameBuffer();
-            setBufferProgress(0);
-            setHasMinimumFrames(false);
-
-            // Then start face detection
-            faceDetector.startDetection(videoProcessor.videoElement);
-            console.log('Face detection started');
-
-            // Start frame processing
-            setIsCapturing(true);
-            processFrames();
-
-            updateStatus('Capture started', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown capture error';
-            updateStatus(`Failed to start capture: ${errorMessage}`, 'error');
-            console.error('Capture start error:', error);
-            await stopCapture();
-        }
-    }, [updateStatus, processFrames]);
-
-    const stopCapture = useCallback(async () => {
-        try {
-            // First set capturing to false to stop frame processing
-            setIsCapturing(false);
-
-            const { animationFrameId, videoProcessor, faceDetector, inferenceWorker } = componentsRef.current;
-
-            // Cancel any pending animation frame
-            if (animationFrameId !== null) {
-                cancelAnimationFrame(animationFrameId);
-                componentsRef.current.animationFrameId = null;
-            }
-
-            // Clear fallback detection interval
-            if (fallbackDetectionInterval.current) {
-                clearInterval(fallbackDetectionInterval.current);
-                fallbackDetectionInterval.current = null;
-            }
-
-            // Stop face detection
-            if (faceDetector) {
-                console.log('Stopping face detection');
-                faceDetector.setCapturingState(false);
-                faceDetector.stopDetection();
-                await faceDetector.dispose();
-                componentsRef.current.faceDetector = null;
-            }
-
-            // Stop video capture
-            if (videoProcessor) {
-                console.log('Stopping video capture');
-                await videoProcessor.stopCapture();
-                // videoProcessor.resetCropMode();
-            }
-
-            // Terminate worker
-            if (inferenceWorker) {
-                console.log('Terminating inference worker');
-                inferenceWorker.terminate();
-                componentsRef.current.inferenceWorker = null;
-            }
-
-            // Terminate signal processing worker
-            if (signalProcessingWorkerRef.current) {
-                signalProcessingWorkerRef.current.terminate();
-                signalProcessingWorkerRef.current = null;
-            }
-
-            // Reset all states
-            setFaceDetected(false);
-            setHasMinimumFrames(false);
-            setBufferProgress(0);
-            setVitalSigns({
-                heartRate: 0,
-                respRate: 0,
-                bvpSignal: [],
-                respSignal: [],
-                lastUpdateTime: Date.now()
-            });
-
-            // Reinitialize components for next capture
-            try {
-                console.log('Reinitializing components');
-                // Create and initialize new face detector
-                const newFaceDetector = new FaceDetector();
-                await newFaceDetector.initialize();
-                componentsRef.current.faceDetector = newFaceDetector;
-
-                // Initialize new worker
-                await initializeWorker();
-            } catch (error) {
-                console.error('Error reinitializing components:', error);
-                updateStatus('Error reinitializing components', 'error');
-            }
-
-            updateStatus('Capture stopped', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown stop capture error';
-            updateStatus(`Error stopping capture: ${errorMessage}`, 'error');
-            console.error('Capture stop error:', error);
-        }
-    }, [updateStatus, initializeWorker]);
-
-    // Export collected data
-    const exportData = useCallback(() => {
-        try {
-            const { signalProcessor } = componentsRef.current;
-
-            if (!signalProcessor) {
-                throw new Error('Signal processor not initialized');
-            }
-
-            const data = signalProcessor.getExportData();
-            const blob = new Blob([data], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const filename = `vital_signs_${new Date().toISOString()}.csv`;
-
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-
-            updateStatus('Data exported successfully', 'success');
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown export error';
-            updateStatus(`Export failed: ${errorMessage}`, 'error');
-            console.error('Data export error:', error);
-        }
-    }, [updateStatus]);
-
-    // Initialize components on mount and cleanup on unmount
-    useEffect(() => {
-        let isMounted = true;
-
-        const init = async () => {
-            try {
-                if (isMounted) {
-                    await initializeComponents();
-                }
-            } catch (error) {
-                console.error('Initialization error:', error);
+                setStatusMessage({
+                    message: `Initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                    type: 'error'
+                });
             }
         };
 
-        init();
+        if (!isChecking && capabilities) {
+            initializeSystem();
+        }
 
         return () => {
-            isMounted = false;
-            const { animationFrameId, inferenceWorker } = componentsRef.current;
-
-            if (animationFrameId) {
-                cancelAnimationFrame(animationFrameId);
-            }
-
-            if (inferenceWorker) {
-                inferenceWorker.terminate();
-            }
-
-            if (isCapturing) {
-                stopCapture();
+            // Cleanup
+            inferenceWorkerRef.current?.terminate();
+            videoProcessorRef.current?.stopCapture();
+            if (progressIntervalRef.current) {
+                clearInterval(progressIntervalRef.current);
             }
         };
-    }, [initializeComponents, stopCapture, isCapturing]);
+    }, [capabilities, isChecking]);
 
+    // Handle inference results
+    const handleInferenceResults = useCallback((results: any) => {
+        setVitalSigns({
+            heartRate: results.heartRate,
+            respRate: results.respRate,
+            bvpSignal: results.bvp,
+            respSignal: results.resp
+        });
+    }, []);
+
+    // Start monitoring buffer progress and trigger inference
+    const startMonitoring = useCallback(() => {
+        if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+        }
+
+        progressIntervalRef.current = window.setInterval(() => {
+            if (!videoProcessorRef.current || !inferenceWorkerRef.current) return;
+
+            const progress = videoProcessorRef.current.getBufferUsagePercentage();
+            setBufferProgress(progress);
+
+            // If we have enough frames, run inference
+            if (videoProcessorRef.current.hasMinimumFrames()) {
+                const frameBuffer = videoProcessorRef.current.getFrameBuffer();
+                inferenceWorkerRef.current.postMessage({
+                    type: 'inference',
+                    frameBuffer
+                });
+            }
+        }, 100); // Check every 100ms
+    }, []);
+
+    // Start capture
+    const handleStartCapture = useCallback(async () => {
+        if (!videoProcessorRef.current) return;
+
+        try {
+            setStatusMessage({
+                message: 'Starting capture...',
+                type: 'info'
+            });
+
+            await videoProcessorRef.current.startCapture();
+            setIsCapturing(true);
+            startMonitoring();
+
+            setStatusMessage({
+                message: 'Capturing vital signs...',
+                type: 'success'
+            });
+        } catch (error) {
+            setIsCapturing(false);
+            setStatusMessage({
+                message: `Failed to start capture: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                type: 'error'
+            });
+        }
+    }, [startMonitoring]);
+
+    // Stop capture
+    const handleStopCapture = useCallback(async () => {
+        if (!videoProcessorRef.current) return;
+
+        try {
+            await videoProcessorRef.current.stopCapture();
+            setIsCapturing(false);
+            setBufferProgress(0);
+
+            if (progressIntervalRef.current) {
+                clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null;
+            }
+
+            setStatusMessage({
+                message: 'Capture stopped',
+                type: 'info'
+            });
+        } catch (error) {
+            setStatusMessage({
+                message: `Failed to stop capture: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                type: 'error'
+            });
+        }
+    }, []);
+
+    // Export data
+    const handleExport = useCallback(() => {
+        try {
+            const data = {
+                timestamp: new Date().toISOString(),
+                vitalSigns
+            };
+
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `vital-signs-${new Date().toISOString()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setStatusMessage({
+                message: 'Data exported successfully',
+                type: 'success'
+            });
+        } catch (error) {
+            setStatusMessage({
+                message: `Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                type: 'error'
+            });
+        }
+    }, [vitalSigns]);
+
+    // Render loading state
+    if (isChecking) {
+        return (
+            <div className="flex h-screen items-center justify-center">
+                <div className="text-center">
+                    <h2 className="text-xl font-semibold mb-4">Checking device compatibility...</h2>
+                    <div className="animate-pulse-slow">Please wait...</div>
+                </div>
+            </div>
+        );
+    }
+
+    // Render incompatible device message
+    if (!capabilities?.isCompatible) {
+        return (
+            <div className="flex h-screen items-center justify-center">
+                <div className="text-center max-w-md p-6 bg-white rounded-lg shadow-lg">
+                    <h2 className="text-xl font-semibold text-error mb-4">Device Not Compatible</h2>
+                    <p className="mb-4">Your device doesn't meet the minimum requirements:</p>
+                    <ul className="text-left list-disc pl-6 mb-4">
+                        {!capabilities?.hasCamera && (
+                            <li>No camera detected</li>
+                        )}
+                        {!capabilities?.hasWebGL && (
+                            <li>WebGL not supported</li>
+                        )}
+                        {!capabilities?.hasWebAssembly && (
+                            <li>WebAssembly not supported</li>
+                        )}
+                    </ul>
+                    <p>Please try using a modern browser on a desktop or mobile device with a camera.</p>
+                </div>
+            </div>
+        );
+    }
+
+    // Main application render
     return (
         <div className="app-container">
             <header className="app-header">
-                <h1>Camera-based Remote Physiological Sensing</h1>
-                <Controls
-                    isCapturing={isCapturing}
-                    isInitialized={isInitialized}
-                    onStart={startCapture}
-                    onStop={stopCapture}
-                    onExport={exportData}
-                />
+                <h1 className="text-2xl font-bold text-primary mb-4">
+                    Remote Physiological Sensing
+                </h1>
             </header>
 
             <main className="app-main">
+                <Controls
+                    isCapturing={isCapturing}
+                    isInitialized={isInitialized}
+                    onStart={handleStartCapture}
+                    onStop={handleStopCapture}
+                    onExport={handleExport}
+                />
+
                 <VideoDisplay
-                    videoProcessor={componentsRef.current.videoProcessor}
-                    faceDetected={faceDetected}
+                    videoProcessor={videoProcessorRef.current}
+                    faceDetected={true} // We're using center crop by default
                     bufferProgress={bufferProgress}
                     isCapturing={isCapturing}
                 />
 
                 <div className="charts-section">
-                    <VitalSignsChartWrapper
+                    <VitalSignsChart
                         title="Blood Volume Pulse"
                         data={vitalSigns.bvpSignal}
                         rate={vitalSigns.heartRate}
                         type="bvp"
-                        isReady={hasMinimumFrames}
+                        isReady={isCapturing && bufferProgress >= 100}
                     />
-                    <VitalSignsChartWrapper
+                    <VitalSignsChart
                         title="Respiratory Signal"
                         data={vitalSigns.respSignal}
                         rate={vitalSigns.respRate}
                         type="resp"
-                        isReady={hasMinimumFrames}
+                        isReady={isCapturing && bufferProgress >= 100}
                     />
                 </div>
             </main>
 
             <StatusMessage
-                message={status.message}
-                type={status.type}
+                message={statusMessage.message}
+                type={statusMessage.type}
             />
         </div>
     );
 };
 
-export default App;
+export default App;            

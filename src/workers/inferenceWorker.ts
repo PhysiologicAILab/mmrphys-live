@@ -1,44 +1,27 @@
+// src/workers/inferenceWorker.ts
 /// <reference lib="webworker" />
 
 import * as ort from 'onnxruntime-web';
-import type { InferenceResult } from '../utils/modelInference';
 import { SignalAnalyzer } from '../utils/signalAnalysis';
 
-declare const self: DedicatedWorkerGlobalScope;
-
-interface WorkerMessage {
-    type: 'init' | 'inference' | 'reset' | 'getStats';
-    data?: {
-        frameBuffer: ImageData[];
-    };
-}
-
-interface WorkerResponse {
-    type: string;
-    status: 'success' | 'error';
-    results?: InferenceResult;
-    error?: string;
+interface InferenceResult {
+    bvp: number[];
+    resp: number[];
+    heartRate: number;
+    respRate: number;
+    inferenceTime: number;
 }
 
 class InferenceWorker {
     private session: ort.InferenceSession | null = null;
     private isInitialized = false;
     private inputName: string = '';
+    private readonly MIN_FRAMES_REQUIRED = 151; // 5 seconds at 30 FPS
+    private modelConfig: any = null;
 
     private async configureOrtEnvironment(): Promise<void> {
         try {
-            // Ensure fetch is available in the worker context
-            const fetchFn = typeof self.fetch === 'function'
-                ? self.fetch
-                : (typeof fetch === 'function'
-                    ? fetch
-                    : null);
-
-            if (!fetchFn) {
-                throw new Error('Fetch is not available in this context');
-            }
-
-            // Configure WASM paths and flags
+            // Configure WASM paths
             ort.env.wasm.wasmPaths = {
                 'ort-wasm.wasm': '/ort/ort-wasm.wasm',
                 'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
@@ -46,229 +29,204 @@ class InferenceWorker {
                 'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
             };
 
-            // Configure WASM settings
+            // Configure WASM flags
             ort.env.wasm.numThreads = 1;
             ort.env.wasm.simd = true;
 
-            console.log('ONNX Runtime WASM environment configured');
+            console.log('ONNX Runtime environment configured');
         } catch (error) {
-            console.error('Failed to configure ONNX Runtime environment:', error);
+            console.error('Failed to configure ONNX Runtime:', error);
             throw error;
         }
     }
 
-
-    private async initialize(): Promise<void> {
+    async initialize(): Promise<void> {
         if (this.isInitialized) return;
 
         try {
-            // Configure environment first
             await this.configureOrtEnvironment();
 
-            // Load model configuration
+            // Load model config first
+            console.log('Loading model configuration...');
             const configResponse = await fetch('/models/rphys/config.json');
-            if (!configResponse.ok) {
-                throw new Error('Failed to load model configuration');
-            }
-            const config = await configResponse.json();
+            if (!configResponse.ok) throw new Error('Failed to fetch model config');
+            this.modelConfig = await configResponse.json();
+            console.log('Model configuration loaded:', this.modelConfig);
 
-            // Load the model
+            // Load model
             console.log('Loading ONNX model...');
-            const modelPath = '/models/rphys/SCAMPS_Multi_9x9.onnx';
-            const response = await fetch(modelPath);
-            if (!response.ok) {
-                throw new Error(`Failed to fetch model: ${response.statusText}`);
-            }
-            const arrayBuffer = await response.arrayBuffer();
+            const modelResponse = await fetch('/models/rphys/SCAMPS_Multi_9x9.onnx');
+            if (!modelResponse.ok) throw new Error('Failed to fetch model');
 
-            // Create session with explicit options
+            // Convert ArrayBuffer to Uint8Array for ONNX Runtime
+            const modelArrayBuffer = await modelResponse.arrayBuffer();
+            const modelData = new Uint8Array(modelArrayBuffer);
+            console.log('Model loaded, size:', modelData.byteLength);
+
+            // Create session with optimized options
             console.log('Creating ONNX session...');
-            this.session = await ort.InferenceSession.create(arrayBuffer, {
+            this.session = await ort.InferenceSession.create(modelData, {
                 executionProviders: ['wasm'],
                 graphOptimizationLevel: 'all',
                 executionMode: 'sequential',
                 enableCpuMemArena: true,
                 enableMemPattern: true,
+                logSeverityLevel: 0,
+                logVerbosityLevel: 0,
+                intraOpNumThreads: 1,
+                interOpNumThreads: 1
             });
 
-            // Store input name
-            this.inputName = this.session.inputNames[0];
-            console.log('Model input names:', this.session.inputNames);
-
-            // Test the input dimensions with dummy data
-            const dummyInputs = {
-                [this.inputName]: new ort.Tensor(
-                    'float32',
-                    new Float32Array(1 * 3 * 3 * 9 * 9),
-                    [1, 3, 3, 9, 9]
-                )
-            };
-
-            try {
-                await this.session.run(dummyInputs);
-                console.log('Input dimensions validated:', [1, 3, 3, 9, 9]);
-            } catch (error) {
-                console.error('Input dimension validation failed:', error);
-                throw error;
+            if (!this.session) {
+                throw new Error('Failed to create ONNX session');
             }
 
-            // Warm up the model
+            this.inputName = this.session.inputNames[0];
+            console.log('Session created successfully');
+            console.log('Input names:', this.session.inputNames);
+            console.log('Output names:', this.session.outputNames);
+
+            // Warmup with correct tensor dimensions
             await this.warmupModel();
 
             this.isInitialized = true;
-            console.log('ONNX session created successfully');
+            self.postMessage({ type: 'init', status: 'success' });
         } catch (error) {
-            console.error('Model initialization error:', error);
-            throw error;
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Initialization error:', errorMessage);
+            self.postMessage({
+                type: 'init',
+                status: 'error',
+                error: `Initialization failed: ${errorMessage}`
+            });
         }
     }
 
     private async warmupModel(): Promise<void> {
         if (!this.session || !this.inputName) {
-            throw new Error('Session not properly initialized');
+            throw new Error('Session not initialized');
         }
 
         try {
-            // Create a small dummy input matching the expected dimensions
-            // [batch_size, sequence_length, channels, height, width]
-            const dummyInput = new Float32Array(1 * 3 * 3 * 9 * 9).fill(0);
-            const tensorDims = [1, 3, 3, 9, 9];
-            const input = new ort.Tensor('float32', dummyInput, tensorDims);
-            const feeds: Record<string, ort.Tensor> = {};
-            feeds[this.inputName] = input;
+            console.log('Starting model warmup...');
 
-            await this.session.run(feeds);
-            console.log('Model warmup completed successfully');
+            // Create a minimal tensor with shape [1, 3, 151, 9, 9]
+            // All values are normalized to be between 0 and 1
+            const inputShape = [1, 3, this.MIN_FRAMES_REQUIRED, 9, 9];
+            const totalSize = inputShape.reduce((a, b) => a * b, 1);
+
+            // Initialize with a constant pattern that makes sense for RGB values
+            const inputData = new Float32Array(totalSize);
+            for (let i = 0; i < totalSize; i++) {
+                // Generate values that would be typical for normalized RGB (0-1)
+                inputData[i] = 0.5; // mid-range value
+            }
+
+            // Create tensor with contiguous memory layout
+            const inputTensor = new ort.Tensor('float32', inputData, inputShape);
+
+            console.log('Created warmup tensor:', {
+                dims: inputTensor.dims,
+                type: inputTensor.type,
+                size: inputTensor.data.length,
+                dataType: inputTensor.data.constructor.name
+            });
+
+            // Create feeds object with input name from model
+            const feeds: Record<string, ort.Tensor> = {};
+            feeds[this.inputName] = inputTensor;
+
+            // Run inference with simple error handling
+            console.log('Running warmup inference...');
+            const results = await this.session.run(feeds);
+
+            // Basic validation of outputs
+            if (!results.rPPG || !results.rRSP) {
+                throw new Error('Missing expected outputs from model');
+            }
+
+            console.log('Warmup inference completed successfully');
+            console.log('Output shapes:', {
+                rPPG: results.rPPG.dims,
+                rRSP: results.rRSP.dims
+            });
         } catch (error) {
-            console.error('Model warmup failed:', error);
+            console.error('Model warmup error:', error);
             throw error;
         }
     }
 
-    private preprocessFrames(frameBuffer: ImageData[]): Float32Array {
-        const batchSize = 1;
-        const sequenceLength = frameBuffer.length;
-        const channels = 3;
-        const height = 9;
-        const width = 9;
+    private preprocessFrames(frameBuffer: ImageData[]): ort.Tensor {
+        if (frameBuffer.length < this.MIN_FRAMES_REQUIRED) {
+            throw new Error(`Insufficient frames. Need ${this.MIN_FRAMES_REQUIRED}, got ${frameBuffer.length}`);
+        }
 
-        const inputTensor = new Float32Array(
-            batchSize * sequenceLength * channels * height * width
-        );
+        // Get the last 151 frames
+        const frames = frameBuffer.slice(-this.MIN_FRAMES_REQUIRED);
 
-        frameBuffer.forEach((frame, frameIdx) => {
-            for (let c = 0; c < channels; c++) {
-                for (let h = 0; h < height; h++) {
-                    for (let w = 0; w < width; w++) {
-                        const pixelIdx = (h * width + w) * 4;
-                        const tensorIdx =
-                            frameIdx * (channels * height * width) +
-                            c * (height * width) +
-                            h * width +
-                            w;
-                        inputTensor[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
+        // Create tensor with shape [1, 3, 151, 9, 9]
+        const shape = [1, 3, this.MIN_FRAMES_REQUIRED, 9, 9];
+        const totalSize = shape.reduce((a, b) => a * b, 1);
+        const data = new Float32Array(totalSize);
+
+        // Fill tensor with normalized frame data
+        // Loop order matches tensor memory layout: CHW format
+        for (let c = 0; c < 3; c++) {
+            for (let f = 0; f < this.MIN_FRAMES_REQUIRED; f++) {
+                for (let h = 0; h < 9; h++) {
+                    for (let w = 0; w < 9; w++) {
+                        const frameOffset = f;
+                        const channelOffset = c * (this.MIN_FRAMES_REQUIRED * 9 * 9);
+                        const pixelOffset = (h * 9 + w);
+                        const tensorIdx = channelOffset + (frameOffset * 9 * 9) + pixelOffset;
+
+                        // Get pixel data from the frame
+                        const frame = frames[f];
+                        const pixelIdx = (h * 9 + w) * 4;
+                        data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
                     }
                 }
             }
-        });
+        }
 
-        return inputTensor;
+        return new ort.Tensor('float32', data, shape);
     }
 
-    private async runInference(frameBuffer: ImageData[]): Promise<InferenceResult> {
-        if (!this.session || !this.inputName || !this.isInitialized) {
-            throw new Error('Worker not properly initialized');
+    async runInference(frameBuffer: ImageData[]): Promise<InferenceResult> {
+        if (!this.isInitialized || !this.session || !this.inputName) {
+            throw new Error('Model not initialized');
         }
 
         try {
-            const inputTensor = this.preprocessFrames(frameBuffer);
-            const tensorDims = [1, frameBuffer.length, 3, 9, 9];
-            const input = new ort.Tensor('float32', inputTensor, tensorDims);
-            const feeds: Record<string, ort.Tensor> = {};
-            feeds[this.inputName] = input;
-
             const startTime = performance.now();
+
+            // Create input tensor
+            const inputTensor = this.preprocessFrames(frameBuffer);
+
+            // Run inference
+            const feeds: Record<string, ort.Tensor> = {};
+            feeds[this.inputName] = inputTensor;
+
             const results = await this.session.run(feeds);
-            const inferenceTime = performance.now() - startTime;
+
+            // Process results
+            const bvpSignal = Array.from(results.rPPG.data as Float32Array);
+            const respSignal = Array.from(results.rRSP.data as Float32Array);
+
+            // Calculate rates
+            const heartRate = SignalAnalyzer.calculateRate(bvpSignal, 30, 'heart');
+            const respRate = SignalAnalyzer.calculateRate(respSignal, 30, 'resp');
 
             return {
-                bvp: Array.from(results['rPPG'].data as Float32Array),
-                resp: Array.from(results['rRSP'].data as Float32Array),
-                heartRate: this.calculateRate(Array.from(results['rPPG'].data as Float32Array), 'heart'),
-                respRate: this.calculateRate(Array.from(results['rRSP'].data as Float32Array), 'resp'),
-                inferenceTime
+                bvp: bvpSignal,
+                resp: respSignal,
+                heartRate,
+                respRate,
+                inferenceTime: performance.now() - startTime
             };
         } catch (error) {
             console.error('Inference error:', error);
-            throw error;
-        }
-    }
-
-    private calculateRate(signal: number[], type: 'heart' | 'resp'): number {
-        const SAMPLING_RATE = 30; // fps
-        try {
-            return SignalAnalyzer.calculateRate(signal, SAMPLING_RATE, type);
-        } catch (error) {
-            console.error(`Error calculating ${type} rate:`, error);
-            return type === 'heart' ? 75 : 15; // Return physiological defaults
-        }
-    }
-
-    public async handleMessage(e: MessageEvent<WorkerMessage>): Promise<void> {
-        const { type, data } = e.data;
-
-        try {
-            switch (type) {
-                case 'init':
-                    await this.initialize();
-                    const initResponse: WorkerResponse = {
-                        type: 'init',
-                        status: 'success'
-                    };
-                    self.postMessage(initResponse);
-                    break;
-
-                case 'inference':
-                    if (!this.isInitialized) {
-                        throw new Error('Worker not initialized');
-                    }
-                    if (!data?.frameBuffer) {
-                        throw new Error('No frame buffer provided');
-                    }
-                    const results = await this.runInference(data.frameBuffer);
-                    const inferenceResponse: WorkerResponse = {
-                        type: 'inference',
-                        status: 'success',
-                        results
-                    };
-                    self.postMessage(inferenceResponse);
-                    break;
-
-                case 'reset':
-                    if (this.session) {
-                        await this.session.release();
-                        this.session = null;
-                    }
-                    this.isInitialized = false;
-                    await this.initialize();
-                    const resetResponse: WorkerResponse = {
-                        type: 'reset',
-                        status: 'success'
-                    };
-                    self.postMessage(resetResponse);
-                    break;
-
-                default:
-                    throw new Error(`Unknown message type: ${type}`);
-            }
-        } catch (error) {
-            console.error(`Error handling message type ${type}:`, error);
-            const errorResponse: WorkerResponse = {
-                type,
-                status: 'error',
-                error: error instanceof Error ? error.message : String(error)
-            };
-            self.postMessage(errorResponse);
+            throw new Error(`Inference failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 }
@@ -276,15 +234,35 @@ class InferenceWorker {
 // Initialize worker instance
 const worker = new InferenceWorker();
 
-// Handle messages from main thread
-self.onmessage = (e: MessageEvent<WorkerMessage>) => {
-    worker.handleMessage(e).catch(error => {
-        console.error('Unhandled worker error:', error);
-        const errorResponse: WorkerResponse = {
+// Handle messages
+self.onmessage = async (e: MessageEvent) => {
+    try {
+        switch (e.data.type) {
+            case 'init':
+                await worker.initialize();
+                break;
+
+            case 'inference':
+                if (!e.data.frameBuffer) {
+                    throw new Error('No frame buffer provided');
+                }
+
+                const results = await worker.runInference(e.data.frameBuffer);
+                self.postMessage({
+                    type: 'inference',
+                    status: 'success',
+                    results
+                });
+                break;
+
+            default:
+                throw new Error(`Unknown message type: ${e.data.type}`);
+        }
+    } catch (error) {
+        self.postMessage({
             type: e.data.type,
             status: 'error',
             error: error instanceof Error ? error.message : String(error)
-        };
-        self.postMessage(errorResponse);
-    });
+        });
+    }
 };

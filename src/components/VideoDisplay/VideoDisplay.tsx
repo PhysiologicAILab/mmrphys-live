@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { VideoDisplayProps } from '@/types';
 
 const VideoDisplay: React.FC<VideoDisplayProps> = ({
@@ -8,51 +8,50 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
     isCapturing
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const animationFrameRef = useRef<number>();
+    const [error, setError] = useState<string | null>(null);
 
-    // Single combined effect for canvas setup and frame processing
+    // Combined effect for canvas setup and frame processing
     useEffect(() => {
         if (!canvasRef.current || !videoProcessor) return;
 
-        // Attach canvas
-        try {
-            console.log('Attaching canvas');
-            videoProcessor.attachCanvas(canvasRef.current);
-        } catch (error) {
-            console.error('Error attaching canvas:', error);
-            return;
-        }
+        let animationFrameId: number;
 
-        // Start frame processing if capturing
-        if (isCapturing) {
-            console.log('Starting frame processing');
-            let animationFrame: number;
+        const initializeCanvas = async () => {
+            try {
+                console.log('Initializing canvas and video display');
+                await videoProcessor.attachCanvas(canvasRef.current!);
 
-            const processFrame = () => {
-                if (videoProcessor && isCapturing) {
-                    videoProcessor.processFrame(null);
-                    animationFrame = requestAnimationFrame(processFrame);
+                if (isCapturing) {
+                    const processFrame = () => {
+                        if (videoProcessor && isCapturing) {
+                            try {
+                                videoProcessor.processFrame(null);
+                                animationFrameId = requestAnimationFrame(processFrame);
+                            } catch (err) {
+                                console.error('Frame processing error:', err);
+                                setError('Frame processing failed');
+                            }
+                        }
+                    };
+                    animationFrameId = requestAnimationFrame(processFrame);
                 }
-            };
+            } catch (err) {
+                console.error('Canvas initialization error:', err);
+                setError('Failed to initialize video display');
+            }
+        };
 
-            // Start the frame processing loop
-            animationFrame = requestAnimationFrame(processFrame);
-            animationFrameRef.current = animationFrame;
-        }
+        initializeCanvas();
 
-        // Cleanup function
         return () => {
-            console.log('Cleaning up - isCapturing:', isCapturing);
-            if (animationFrameRef.current) {
-                cancelAnimationFrame(animationFrameRef.current);
-                animationFrameRef.current = undefined;
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
             }
             if (videoProcessor) {
-                console.log('Detaching canvas');
                 videoProcessor.detachCanvas();
             }
         };
-    }, [videoProcessor, isCapturing]); // Depend on both videoProcessor and isCapturing
+    }, [videoProcessor, isCapturing]);
 
     return (
         <div className="video-section">
@@ -61,11 +60,7 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
                     ref={canvasRef}
                     width={256}
                     height={256}
-                    style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover'
-                    }}
+                    className="w-full h-full object-cover"
                 />
                 {bufferProgress > 0 && bufferProgress < 100 && (
                     <div className="buffer-progress">
@@ -74,16 +69,25 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
                             style={{ width: `${bufferProgress}%` }}
                         />
                         <span className="progress-text">
-                            Collecting frames: {Math.round(bufferProgress)}%
+                            {Math.round(bufferProgress)}% Ready
                         </span>
                     </div>
                 )}
                 <div className="face-guide" />
             </div>
-            {!faceDetected && (
+
+            {error && (
+                <div className="error-message mt-2 text-error text-center">
+                    {error}
+                </div>
+            )}
+
+            {!faceDetected && !error && (
                 <div className="no-face-warning">
-                    <p>Face detection unavailable</p>
-                    <p className="text-sm opacity-75">Using center region for processing</p>
+                    <p>Position your face in the oval</p>
+                    <p className="text-sm opacity-75">
+                        Using center region for processing
+                    </p>
                 </div>
             )}
         </div>
