@@ -1,4 +1,5 @@
 import { FaceBox } from './faceDetector';
+import { videoProcessingWorker } from "../workers/videoProcessingWorker";
 
 export interface ProcessedFrame {
     data: Uint8ClampedArray;
