@@ -20,7 +20,9 @@ const App: React.FC = () => {
         heartRate: 0,
         respRate: 0,
         bvpSignal: [],
-        respSignal: []
+        respSignal: [],
+        bvpSNR: 0,
+        respSNR: 0
     });
 
     // Refs for processors and workers
@@ -96,10 +98,12 @@ const App: React.FC = () => {
     // Handle inference results
     const handleInferenceResults = useCallback((results: any) => {
         setVitalSigns({
-            heartRate: results.heartRate,
-            respRate: results.respRate,
-            bvpSignal: results.bvp,
-            respSignal: results.resp
+            heartRate: results.bvp.rate,
+            respRate: results.resp.rate,
+            bvpSignal: results.bvp.filtered,
+            respSignal: results.resp.filtered,
+            bvpSNR: results.bvp.snr,
+            respSNR: results.resp.snr
         });
     }, []);
 
@@ -266,7 +270,7 @@ const App: React.FC = () => {
 
                 <VideoDisplay
                     videoProcessor={videoProcessorRef.current}
-                    faceDetected={true} // We're using center crop by default
+                    faceDetected={true}
                     bufferProgress={bufferProgress}
                     isCapturing={isCapturing}
                 />
@@ -276,6 +280,7 @@ const App: React.FC = () => {
                         title="Blood Volume Pulse"
                         data={vitalSigns.bvpSignal}
                         rate={vitalSigns.heartRate}
+                        snr={vitalSigns.bvpSNR}
                         type="bvp"
                         isReady={isCapturing && bufferProgress >= 100}
                     />
@@ -283,6 +288,7 @@ const App: React.FC = () => {
                         title="Respiratory Signal"
                         data={vitalSigns.respSignal}
                         rate={vitalSigns.respRate}
+                        snr={vitalSigns.respSNR}
                         type="resp"
                         isReady={isCapturing && bufferProgress >= 100}
                     />

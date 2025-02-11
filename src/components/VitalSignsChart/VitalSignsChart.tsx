@@ -1,3 +1,5 @@
+// src/components/VitalSignsChart/VitalSignsChart.tsx
+
 import React, { useMemo } from 'react';
 import {
     Chart as ChartJS,
@@ -12,7 +14,6 @@ import {
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 
-// Register ChartJS components
 ChartJS.register(
     CategoryScale,
     LinearScale,
@@ -28,6 +29,7 @@ interface VitalSignsChartProps {
     title: string;
     data: number[];
     rate: number;
+    snr: number;
     type: 'bvp' | 'resp';
     isReady: boolean;
 }
@@ -36,6 +38,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     title,
     data,
     rate,
+    snr,
     type,
     isReady = false
 }) => {
@@ -76,14 +79,24 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
             tooltip: {
                 enabled: true,
                 mode: 'index' as const,
-                intersect: false
+                intersect: false,
+                callbacks: {
+                    label: (context: any) => {
+                        const value = context.parsed.y;
+                        return `${type === 'bvp' ? 'BVP' : 'Resp'}: ${value.toFixed(3)}`;
+                    }
+                }
             },
             title: {
                 display: true,
-                text: `${title} - ${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`
+                text: [
+                    `${title}`,
+                    `${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
+                    `SNR: ${snr.toFixed(1)} dB`
+                ]
             }
         }
-    }), [title, rate, type]);
+    }), [title, rate, snr, type]);
 
     const chartData = useMemo(() => ({
         labels: data.map((_, i) => (i / 30).toFixed(1)),
@@ -115,35 +128,54 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         );
     }
 
+    const getSignalQualityClass = (snrValue: number): string => {
+        if (snrValue >= 10) return 'excellent';
+        if (snrValue >= 5) return 'good';
+        if (snrValue >= 0) return 'moderate';
+        return 'poor';
+    };
+
+    const getRateClass = (currentRate: number): string => {
+        if (type === 'bvp') {
+            if (currentRate < 60) return 'low';
+            if (currentRate > 100) return 'high';
+            return 'normal';
+        } else {
+            if (currentRate < 12) return 'low';
+            if (currentRate > 20) return 'high';
+            return 'normal';
+        }
+    };
+
     return (
         <div className="vital-signs-chart">
-            <div className="chart-container">
+            <div className="chart-container h-64">
                 <Line
                     options={chartOptions}
                     data={chartData}
                     fallbackContent={<div>Unable to render chart</div>}
                 />
             </div>
-            <div className={`metric ${getRateClass(rate, type)}`}>
-                {rate.toFixed(1)} {type === 'bvp' ? 'BPM' : 'Breaths/min'}
-                <small className="rate-type">
-                    {type === 'bvp' ? 'Heart Rate' : 'Respiratory Rate'}
-                </small>
+            <div className="metrics-container mt-4 grid grid-cols-2 gap-4">
+                <div className={`rate-metric p-2 rounded ${getRateClass(rate)}`}>
+                    <div className="text-lg font-bold">
+                        {rate.toFixed(1)} {type === 'bvp' ? 'BPM' : 'Breaths/min'}
+                    </div>
+                    <div className="text-sm opacity-75">
+                        {type === 'bvp' ? 'Heart Rate' : 'Respiratory Rate'}
+                    </div>
+                </div>
+                <div className={`snr-metric p-2 rounded ${getSignalQualityClass(snr)}`}>
+                    <div className="text-lg font-bold">
+                        {snr.toFixed(1)} dB
+                    </div>
+                    <div className="text-sm opacity-75">
+                        Signal Quality
+                    </div>
+                </div>
             </div>
         </div>
     );
-};
-
-const getRateClass = (rate: number, type: 'bvp' | 'resp'): string => {
-    if (type === 'bvp') {
-        if (rate < 60) return 'low';
-        if (rate > 100) return 'high';
-        return 'normal';
-    } else {
-        if (rate < 12) return 'low';
-        if (rate > 20) return 'high';
-        return 'normal';
-    }
 };
 
 export default VitalSignsChart;

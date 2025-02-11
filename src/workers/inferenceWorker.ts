@@ -3,12 +3,23 @@
 
 import * as ort from 'onnxruntime-web';
 import { SignalAnalyzer } from '../utils/signalAnalysis';
+import { SignalFilters, FilteredSignal } from '../utils/signalFilters';
+
 
 interface InferenceResult {
-    bvp: number[];
-    resp: number[];
-    heartRate: number;
-    respRate: number;
+    bvp: {
+        raw: number[];
+        filtered: number[];
+        snr: number;
+        rate: number;
+    };
+    resp: {
+        raw: number[];
+        filtered: number[];
+        snr: number;
+        rate: number;
+    };
+    timestamp: string;
     inferenceTime: number;
 }
 
@@ -217,19 +228,32 @@ class InferenceWorker {
 
             const results = await this.session.run(feeds);
 
-            // Process results
-            const bvpSignal = Array.from(results.rPPG.data as Float32Array);
-            const respSignal = Array.from(results.rRSP.data as Float32Array);
+            // Get raw signals
+            const rawBVP = Array.from(results.rPPG.data as Float32Array);
+            const rawResp = Array.from(results.rRSP.data as Float32Array);
 
-            // Calculate rates
-            const heartRate = SignalAnalyzer.calculateRate(bvpSignal, 30, 'heart');
-            const respRate = SignalAnalyzer.calculateRate(respSignal, 30, 'resp');
+            // Process BVP signal
+            const bvpProcessed = SignalFilters.processBVPSignal(rawBVP, 30);
+            const heartRate = SignalAnalyzer.calculateRate(bvpProcessed.filteredData, 30, 'heart');
+
+            // Process respiratory signal
+            const respProcessed = SignalFilters.processRespSignal(rawResp, 30);
+            const respRate = SignalAnalyzer.calculateRate(respProcessed.filteredData, 30, 'resp');
 
             return {
-                bvp: bvpSignal,
-                resp: respSignal,
-                heartRate,
-                respRate,
+                bvp: {
+                    raw: rawBVP,
+                    filtered: bvpProcessed.filteredData,
+                    snr: bvpProcessed.snr,
+                    rate: heartRate
+                },
+                resp: {
+                    raw: rawResp,
+                    filtered: respProcessed.filteredData,
+                    snr: respProcessed.snr,
+                    rate: respRate
+                },
+                timestamp: new Date().toISOString(),
                 inferenceTime: performance.now() - startTime
             };
         } catch (error) {

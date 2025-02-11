@@ -261,6 +261,72 @@ h1 {
     transition: all var(--transition-speed) ease-out;
 }
 
+.metrics-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.rate-metric,
+.snr-metric {
+    padding: 0.75rem;
+    border-radius: var(--border-radius);
+    text-align: center;
+    transition: all var(--transition-speed) ease-out;
+}
+
+/* Rate Metric Colors */
+.rate-metric.low {
+    background-color: rgba(231, 76, 60, 0.1);
+    color: var(--error-color);
+}
+
+.rate-metric.normal {
+    background-color: rgba(46, 204, 113, 0.1);
+    color: var(--success-color);
+}
+
+.rate-metric.high {
+    background-color: rgba(241, 196, 15, 0.1);
+    color: var(--warning-color);
+}
+
+/* SNR Metric Colors */
+.snr-metric.excellent {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: rgb(16, 185, 129);
+}
+
+.snr-metric.good {
+    background-color: rgba(46, 204, 113, 0.1);
+    color: var(--success-color);
+}
+
+.snr-metric.moderate {
+    background-color: rgba(241, 196, 15, 0.1);
+    color: var(--warning-color);
+}
+
+.snr-metric.poor {
+    background-color: rgba(231, 76, 60, 0.1);
+    color: var(--error-color);
+}
+
+/* Metric Text Styles */
+.rate-metric .text-lg,
+.snr-metric .text-lg {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.rate-metric .text-sm,
+.snr-metric .text-sm {
+    font-size: 0.875rem;
+    opacity: 0.75;
+}
+
 .metric.normal {
     background-color: var(--success-color-light, rgba(46, 204, 113, 0.1));
     color: var(--success-color);
@@ -292,14 +358,20 @@ h1 {
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    height: 100%;
+    height: 16rem;
+    background-color: #f8fafc;
+    border-radius: var(--border-radius);
     text-align: center;
-    color: var(--secondary-color);
-    opacity: 0.7;
 }
 
 .chart-placeholder p {
-    margin: 0.5rem 0;
+    color: #64748b;
+    margin: 0.25rem 0;
+}
+
+.chart-placeholder p:first-child {
+    font-weight: 600;
+    font-size: 1.125rem;
 }
 
 .vital-signs-chart .chart-title {
@@ -405,6 +477,25 @@ h1 {
 
     h1 {
         font-size: 1.5rem;
+    }
+
+    .metrics-container {
+        gap: 0.5rem;
+    }
+
+    .rate-metric,
+    .snr-metric {
+        padding: 0.5rem;
+    }
+
+    .rate-metric .text-lg,
+    .snr-metric .text-lg {
+        font-size: 1rem;
+    }
+
+    .rate-metric .text-sm,
+    .snr-metric .text-sm {
+        font-size: 0.75rem;
     }
 }
 
