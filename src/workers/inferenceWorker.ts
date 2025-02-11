@@ -27,8 +27,16 @@ class InferenceWorker {
 
     private async configureOrtEnvironment(): Promise<void> {
         try {
-            // Configure fetch to work in worker context
-            const globalFetch = typeof self !== 'undefined' ? self.fetch : window.fetch;
+            // Ensure fetch is available in the worker context
+            const fetchFn = typeof self.fetch === 'function'
+                ? self.fetch
+                : (typeof fetch === 'function'
+                    ? fetch
+                    : null);
+
+            if (!fetchFn) {
+                throw new Error('Fetch is not available in this context');
+            }
 
             // Configure WASM paths and flags
             ort.env.wasm.wasmPaths = {
@@ -37,11 +45,6 @@ class InferenceWorker {
                 'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
                 'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
             };
-
-            // Override fetch if needed
-            if (typeof fetch === 'undefined' || fetch.name === 'fetch2') {
-                (self as any).fetch = globalFetch;
-            }
 
             // Configure WASM settings
             ort.env.wasm.numThreads = 1;
@@ -53,6 +56,7 @@ class InferenceWorker {
             throw error;
         }
     }
+
 
     private async initialize(): Promise<void> {
         if (this.isInitialized) return;
