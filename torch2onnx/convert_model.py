@@ -18,7 +18,7 @@ def main():
                         default='torch2onnx/config.json')
     parser.add_argument('--temp_weights', type=str,
                         default='torch2onnx/temp_converted_weights.pth')
-    parser.add_argument('--num_frames', type=int, default=300)
+    parser.add_argument('--num_frames', type=int, default=180)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--height', type=int, default=9)
     parser.add_argument('--width', type=int, default=9)

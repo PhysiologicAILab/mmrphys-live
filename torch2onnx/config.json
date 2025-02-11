@@ -1,5 +1,5 @@
 {
-    "FRAME_NUM": 300,
+    "FRAME_NUM": 180,
     "TASKS": [
         "BVP",
         "RSP"
@@ -9,7 +9,7 @@
     "input_size": [
         1,
         3,
-        300,
+        180,
         9,
         9
     ],
@@ -26,12 +26,12 @@
         "bvp": {
             "min_rate": 40,
             "max_rate": 180,
-            "buffer_size": 150
+            "buffer_size": 180
         },
         "resp": {
             "min_rate": 8,
             "max_rate": 30,
-            "buffer_size": 150
+            "buffer_size": 180
         }
     }
 }

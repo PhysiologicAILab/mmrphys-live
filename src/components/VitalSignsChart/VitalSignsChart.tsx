@@ -54,7 +54,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     text: 'Time (seconds)'
                 },
                 min: 0,
-                max: 10, // 10 seconds window
+                max: 6, // 6 seconds window
                 ticks: {
                     stepSize: 1
                 }

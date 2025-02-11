@@ -10,48 +10,23 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [error, setError] = useState<string | null>(null);
 
-    // Combined effect for canvas setup and frame processing
+    // Effect for canvas setup and cleanup
     useEffect(() => {
         if (!canvasRef.current || !videoProcessor) return;
 
-        let animationFrameId: number;
+        try {
+            // Attach canvas to video processor
+            videoProcessor.attachCanvas(canvasRef.current);
 
-        const initializeCanvas = async () => {
-            try {
-                console.log('Initializing canvas and video display');
-                await videoProcessor.attachCanvas(canvasRef.current!);
-
-                if (isCapturing) {
-                    const processFrame = () => {
-                        if (videoProcessor && isCapturing) {
-                            try {
-                                videoProcessor.processFrame(null);
-                                animationFrameId = requestAnimationFrame(processFrame);
-                            } catch (err) {
-                                console.error('Frame processing error:', err);
-                                setError('Frame processing failed');
-                            }
-                        }
-                    };
-                    animationFrameId = requestAnimationFrame(processFrame);
-                }
-            } catch (err) {
-                console.error('Canvas initialization error:', err);
-                setError('Failed to initialize video display');
-            }
-        };
-
-        initializeCanvas();
-
-        return () => {
-            if (animationFrameId) {
-                cancelAnimationFrame(animationFrameId);
-            }
-            if (videoProcessor) {
+            // Cleanup function
+            return () => {
                 videoProcessor.detachCanvas();
-            }
-        };
-    }, [videoProcessor, isCapturing]);
+            };
+        } catch (err) {
+            console.error('Canvas initialization error:', err);
+            setError('Failed to initialize video display');
+        }
+    }, [videoProcessor]);
 
     return (
         <div className="video-section">

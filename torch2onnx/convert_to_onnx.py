@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class OnnxConverter:
-    def __init__(self, model_path, onnx_path, config_path, num_frames=151,
+    def __init__(self, model_path, onnx_path, config_path, num_frames=180,
                  num_channels=3, height=9, width=9):
         self.model_path = Path(model_path)
         self.onnx_path = Path(onnx_path)
@@ -54,12 +54,12 @@ class OnnxConverter:
                 "bvp": {
                     "min_rate": 40,
                     "max_rate": 180,
-                    "buffer_size": 150
+                    "buffer_size": 180
                 },
                 "resp": {
                     "min_rate": 8,
                     "max_rate": 30,
-                    "buffer_size": 150
+                    "buffer_size": 180
                 }
             }
         }
@@ -113,7 +113,7 @@ class OnnxConverter:
 
             # Create dummy input
             dummy_input = torch.randn(
-                1, self.num_channels, self.num_frames+1,
+                1, self.num_channels, self.num_frames,
                 self.height, self.width,
                 requires_grad=False
             ).to(self.device)
@@ -131,7 +131,7 @@ class OnnxConverter:
                 dummy_input,
                 self.onnx_path,
                 export_params=True,
-                opset_version=12,
+                opset_version=11,
                 do_constant_folding=True,
                 input_names=['input'],
                 output_names=['rPPG', 'rRSP'],
@@ -152,7 +152,7 @@ class OnnxConverter:
         """Verify the exported ONNX model"""
         try:
             model = onnx.load(self.onnx_path)
-            onnx.checker.check_model(model)
+            onnx.checker.check_model(model, full_check=True)
             logger.info("ONNX model verification passed")
 
             # Print model graph
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--onnx_path', type=str, required=True)
     parser.add_argument('--config_path', type=str, required=True)
-    parser.add_argument('--num_frames', type=int, default=151)
+    parser.add_argument('--num_frames', type=int, default=180)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--height', type=int, default=9)
     parser.add_argument('--width', type=int, default=9)

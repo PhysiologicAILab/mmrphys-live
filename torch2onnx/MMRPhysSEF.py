@@ -149,23 +149,10 @@ class MMRPhysSEF(nn.Module):
         super(MMRPhysSEF, self).__init__()
         self.debug = debug
         self.in_channels = in_channels
+        self.num_frames = frames
 
-        if self.in_channels == 4:
-            self.rgb_norm = nn.InstanceNorm3d(3)
-            self.thermal_norm = nn.InstanceNorm3d(1)
-        elif self.in_channels == 3:
-            self.rgb_norm = nn.InstanceNorm3d(3)
-        elif self.in_channels == 1:
-            self.thermal_norm = nn.InstanceNorm3d(1)
-        else:
-            print("Unsupported input channels")
-            exit()
-    
+        self.rgb_norm = nn.InstanceNorm3d(3)    
         self.tasks = md_config["TASKS"]
-
-        if self.debug:
-            print("nf_BVP:", nf_BVP)
-            print("nf_RSP:", nf_RSP)
 
         if "BVP" in self.tasks or "BP" in self.tasks:
             self.bvp_feature_extractor = BVP_FeatureExtractor(inCh=self.in_channels, dropout_rate=dropout, debug=debug)
@@ -181,39 +168,14 @@ class MMRPhysSEF(nn.Module):
 
     def forward(self, x): # [batch, Features=3, Temp=frames, Width=9, Height=9]
 
-        [batch, channel, length, width, height] = x.shape
+        # [batch, length, channel, width, height] = x.shape
 
-        x = x[:, :, 1:, :, :] - x[:, :, :-1, :, :]
+        # For ONNX, the input shape is: # [batch, length, channel, width, height]
+        # perform diff outside the model
+        # x = x[:, :, 1:, :, :] - x[:, :, :-1, :, :]
         # x = torch.diff(x, dim=2)    # Removes any aperiod variations, and also removes spatial facial features - which are not required to learn by the model
 
-        if self.in_channels == 4:
-            rgb_x = x[:, :3, :, :, :]
-            rgb_x = self.rgb_norm(rgb_x)
-
-            thermal_x = x[:, -1:, :, :, :]
-            thermal_x = self.thermal_norm(thermal_x)
-
-            x = torch.concat([rgb_x, thermal_x], dim = 1)
-
-        elif self.in_channels == 3:
-            x = x[:, :3, :, :, :]
-            x = self.rgb_norm(x)
-            
-        elif self.in_channels == 1:
-            x = x[:, -1:, :, :, :]
-            x = self.thermal_norm(x)
-
-        else:
-            try:
-                print("Specified input channels:", self.in_channels)
-                print("Data channels", channel)
-                assert self.in_channels <= channel
-            except:
-                print("Incorrectly preprocessed data provided as input. Number of channels exceed the specified or default channels")
-                print("Default or specified channels:", self.in_channels)
-                print("Data channels [B, C, N, W, H]", x.shape)
-                print("Exiting")
-                exit()
+        x = self.rgb_norm(x)
 
         if "BVP" in self.tasks:
             bvp_voxel_embeddings = self.bvp_feature_extractor(x)
@@ -226,12 +188,12 @@ class MMRPhysSEF(nn.Module):
             rsp_voxel_embeddings = None
 
         if "BVP" in self.tasks:
-            rPPG = self.rppg_head(length-1, bvp_embeddings=bvp_voxel_embeddings)
+            rPPG = self.rppg_head(self.num_frames, bvp_embeddings=bvp_voxel_embeddings)
         else:
             rPPG = None
 
         if "RSP" in self.tasks:
-            rBr = self.rBr_head(length-1, rsp_embeddings=rsp_voxel_embeddings)
+            rBr = self.rBr_head(self.num_frames, rsp_embeddings=rsp_voxel_embeddings)
         else:
             rBr = None
 

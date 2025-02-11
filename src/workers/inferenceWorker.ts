@@ -16,7 +16,7 @@ class InferenceWorker {
     private session: ort.InferenceSession | null = null;
     private isInitialized = false;
     private inputName: string = '';
-    private readonly MIN_FRAMES_REQUIRED = 151; // 5 seconds at 30 FPS
+    private readonly MIN_FRAMES_REQUIRED = 181; // 6 seconds at 30 FPS +1 frame for Diff
     private modelConfig: any = null;
 
     private async configureOrtEnvironment(): Promise<void> {
@@ -110,9 +110,9 @@ class InferenceWorker {
         try {
             console.log('Starting model warmup...');
 
-            // Create a minimal tensor with shape [1, 3, 151, 9, 9]
+            // Create a minimal tensor with shape [1, 180, 3, 9, 9]
             // All values are normalized to be between 0 and 1
-            const inputShape = [1, 3, this.MIN_FRAMES_REQUIRED, 9, 9];
+            const inputShape = [1, 3, this.MIN_FRAMES_REQUIRED - 1, 9, 9];
             const totalSize = inputShape.reduce((a, b) => a * b, 1);
 
             // Initialize with a constant pattern that makes sense for RGB values
@@ -161,27 +161,35 @@ class InferenceWorker {
             throw new Error(`Insufficient frames. Need ${this.MIN_FRAMES_REQUIRED}, got ${frameBuffer.length}`);
         }
 
-        // Get the last 151 frames
+        // Get the last 181 frames
         const frames = frameBuffer.slice(-this.MIN_FRAMES_REQUIRED);
+        const diffFrames = frames.slice(1).map((frame, i) => {
+            const prevFrame = frames[i];
+            const diffData = new Uint8ClampedArray(frame.data.length);
+            for (let i = 0; i < frame.data.length; i++) {
+                diffData[i] = frame.data[i] - prevFrame.data[i];
+            }
+            return new ImageData(diffData, frame.width, frame.height);
+        });
 
-        // Create tensor with shape [1, 3, 151, 9, 9]
-        const shape = [1, 3, this.MIN_FRAMES_REQUIRED, 9, 9];
+        // Create tensor with shape [1, 3, 181, 9, 9]
+        const shape = [1, 3, this.MIN_FRAMES_REQUIRED -1, 9, 9];
         const totalSize = shape.reduce((a, b) => a * b, 1);
         const data = new Float32Array(totalSize);
 
         // Fill tensor with normalized frame data
         // Loop order matches tensor memory layout: CHW format
         for (let c = 0; c < 3; c++) {
-            for (let f = 0; f < this.MIN_FRAMES_REQUIRED; f++) {
+            for (let f = 0; f < this.MIN_FRAMES_REQUIRED - 1; f++) {
                 for (let h = 0; h < 9; h++) {
                     for (let w = 0; w < 9; w++) {
                         const frameOffset = f;
-                        const channelOffset = c * (this.MIN_FRAMES_REQUIRED * 9 * 9);
+                        const channelOffset = c * ((this.MIN_FRAMES_REQUIRED-1) * 9 * 9);
                         const pixelOffset = (h * 9 + w);
                         const tensorIdx = channelOffset + (frameOffset * 9 * 9) + pixelOffset;
 
                         // Get pixel data from the frame
-                        const frame = frames[f];
+                        const frame = diffFrames[f];
                         const pixelIdx = (h * 9 + w) * 4;
                         data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
                     }
