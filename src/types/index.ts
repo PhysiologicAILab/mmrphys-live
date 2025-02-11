@@ -1,9 +1,11 @@
 import { VideoProcessor } from '../utils/videoProcessor';
 
+
 export interface VideoDisplayProps {
     videoProcessor: VideoProcessor | null;
     faceDetected: boolean;
     bufferProgress: number;
+    isCapturing: boolean;  // Add this to the interface
 }
 
 export interface VitalSignsChartProps {

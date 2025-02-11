@@ -4,43 +4,55 @@ import { VideoDisplayProps } from '@/types';
 const VideoDisplay: React.FC<VideoDisplayProps> = ({
     videoProcessor,
     faceDetected,
-    bufferProgress
+    bufferProgress,
+    isCapturing
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const animationFrameRef = useRef<number>();
 
+    // Single combined effect for canvas setup and frame processing
     useEffect(() => {
         if (!canvasRef.current || !videoProcessor) return;
 
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d', {
-            alpha: false,
-            desynchronized: true
-        });
-
-        if (!ctx) {
-            console.error('Failed to get canvas context');
+        // Attach canvas
+        try {
+            console.log('Attaching canvas');
+            videoProcessor.attachCanvas(canvasRef.current);
+        } catch (error) {
+            console.error('Error attaching canvas:', error);
             return;
         }
 
-        // Clear canvas
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Start frame processing if capturing
+        if (isCapturing) {
+            console.log('Starting frame processing');
+            let animationFrame: number;
 
-        try {
-            videoProcessor.attachCanvas(canvas);
-            console.log('Canvas attached successfully');
-        } catch (error) {
-            console.error('Error attaching canvas:', error);
+            const processFrame = () => {
+                if (videoProcessor && isCapturing) {
+                    videoProcessor.processFrame(null);
+                    animationFrame = requestAnimationFrame(processFrame);
+                }
+            };
+
+            // Start the frame processing loop
+            animationFrame = requestAnimationFrame(processFrame);
+            animationFrameRef.current = animationFrame;
         }
 
+        // Cleanup function
         return () => {
-            try {
+            console.log('Cleaning up - isCapturing:', isCapturing);
+            if (animationFrameRef.current) {
+                cancelAnimationFrame(animationFrameRef.current);
+                animationFrameRef.current = undefined;
+            }
+            if (videoProcessor) {
+                console.log('Detaching canvas');
                 videoProcessor.detachCanvas();
-            } catch (error) {
-                console.error('Error detaching canvas:', error);
             }
         };
-    }, [videoProcessor]);
+    }, [videoProcessor, isCapturing]); // Depend on both videoProcessor and isCapturing
 
     return (
         <div className="video-section">
@@ -49,6 +61,11 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
                     ref={canvasRef}
                     width={256}
                     height={256}
+                    style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover'
+                    }}
                 />
                 {bufferProgress > 0 && bufferProgress < 100 && (
                     <div className="buffer-progress">
@@ -65,7 +82,8 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
             </div>
             {!faceDetected && (
                 <div className="no-face-warning">
-                    Please position your face in the frame
+                    <p>Face detection unavailable</p>
+                    <p className="text-sm opacity-75">Using center region for processing</p>
                 </div>
             )}
         </div>

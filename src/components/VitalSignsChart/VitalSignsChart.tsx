@@ -11,14 +11,7 @@ import {
     Legend,
     Filler
 } from 'chart.js';
-import type {
-    ChartOptions as _ChartOptions,
-    ChartData as _ChartData,
-    ChartDataset as _ChartDataset,
-    TooltipItem as _TooltipItem
-} from 'chart.js/auto';
 
-// Register Chart.js components
 ChartJS.register(
     CategoryScale,
     LinearScale,
@@ -29,12 +22,6 @@ ChartJS.register(
     Legend,
     Filler
 );
-
-// Explicitly define types
-type ChartOptions = _ChartOptions<'line'>;
-type ChartData = _ChartData<'line'>;
-type ChartDataset = _ChartDataset<'line', number[]>;
-type TooltipItem = _TooltipItem<'line'>;
 
 interface VitalSignsChartProps {
     title: string;
@@ -51,32 +38,29 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     type,
     isReady = false
 }) => {
-    if (!isReady) {
-        return (
-            <div className="vital-signs-chart not-ready">
-                <div className="chart-placeholder">
-                    <p>Collecting data...</p>
-                </div>
-            </div>
-        );
-    }
-
-    // Chart options using CSS variables
-    const options = useMemo<ChartOptions>(() => ({
+    const chartOptions = useMemo(() => ({
         responsive: true,
         maintainAspectRatio: false,
-        animation: false,
+        animation: {
+            duration: 0 // Disable animations for better performance
+        },
         interaction: {
             intersect: false,
             mode: 'index'
         },
         plugins: {
             legend: {
-                display: false
+                display: true,
+                position: 'top' as const,
+                labels: {
+                    color: 'var(--text-color)',
+                    boxWidth: 20,
+                    padding: 20
+                }
             },
             title: {
                 display: true,
-                text: `${title}: ${rate.toFixed(1)} BPM`,
+                text: `${title} - ${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
                 color: 'var(--text-color)',
                 font: {
                     size: 16,
@@ -84,23 +68,22 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 },
                 padding: {
                     top: 10,
-                    bottom: 10
+                    bottom: 30
                 }
             },
             tooltip: {
                 enabled: true,
-                mode: 'index',
-                intersect: false,
                 backgroundColor: 'rgba(0, 0, 0, 0.8)',
                 titleColor: 'white',
                 bodyColor: 'white',
                 borderColor: 'white',
                 borderWidth: 1,
                 padding: 10,
-                displayColors: false,
+                displayColors: true,
                 callbacks: {
-                    label: (context: TooltipItem) => {
-                        return `Value: ${(context.parsed.y as number).toFixed(3)}`;
+                    label: (context: any) => {
+                        const value = context.parsed.y;
+                        return `${type === 'bvp' ? 'BVP' : 'Resp'}: ${value.toFixed(3)}`;
                     }
                 }
             }
@@ -111,8 +94,11 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 display: true,
                 title: {
                     display: true,
-                    text: 'Time (s)',
-                    color: 'var(--text-color)'
+                    text: 'Time (seconds)',
+                    color: 'var(--text-color)',
+                    font: {
+                        weight: 'bold'
+                    }
                 },
                 grid: {
                     display: true,
@@ -120,15 +106,19 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 },
                 ticks: {
                     color: 'var(--text-color)',
-                    maxRotation: 0
+                    maxRotation: 0,
+                    callback: (value: number) => value.toFixed(1)
                 }
             },
             y: {
                 display: true,
                 title: {
                     display: true,
-                    text: 'Amplitude',
-                    color: 'var(--text-color)'
+                    text: type === 'bvp' ? 'Blood Volume Pulse (a.u.)' : 'Respiratory Signal (a.u.)',
+                    color: 'var(--text-color)',
+                    font: {
+                        weight: 'bold'
+                    }
                 },
                 grid: {
                     display: true,
@@ -139,13 +129,13 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 }
             }
         }
-    }), [title, rate]);
+    }), [title, rate, type]);
 
-    // Chart data using CSS variables
-    const chartData = useMemo<ChartData>(() => ({
+    const chartData = useMemo(() => ({
         labels: data.map((_, index) => (index / 30).toFixed(1)),
         datasets: [
             {
+                label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
                 data: data,
                 borderColor: `var(--${type}-color)`,
                 backgroundColor: `var(--${type}-color-light)`,
@@ -157,30 +147,44 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 pointHoverBackgroundColor: `var(--${type}-color)`,
                 pointHoverBorderColor: 'white',
                 pointHoverBorderWidth: 2
-            } as ChartDataset
+            }
         ]
     }), [data, type]);
 
+    if (!isReady || data.length === 0) {
+        return (
+            <div className="vital-signs-chart not-ready">
+                <div className="chart-placeholder">
+                    <p>Initializing signal processing...</p>
+                    <p>Please wait while we collect enough data</p>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div className={`vital-signs-chart ${!isReady ? 'not-ready' : ''}`}>
+        <div className="vital-signs-chart">
             <div className="chart-container">
                 <Line
-                    options={options}
+                    options={chartOptions}
                     data={chartData}
+                    fallbackContent={<div>Unable to render chart</div>}
                 />
             </div>
             <div className={`metric ${getRateClass(rate, type)}`}>
-                {rate.toFixed(1)} BPM
+                {rate.toFixed(1)} {type === 'bvp' ? 'BPM' : 'Breaths/min'}
+                <small className="rate-type">
+                    {type === 'bvp' ? 'Heart Rate' : 'Respiratory Rate'}
+                </small>
             </div>
         </div>
     );
 };
 
-// Helper function to determine rate classification
 const getRateClass = (rate: number, type: 'bvp' | 'resp'): string => {
     const ranges = {
-        bvp: { min: 35, max: 180 },  // Heart rate ranges
-        resp: { min: 6, max: 30 }    // Respiratory rate ranges
+        bvp: { min: 40, max: 180 },
+        resp: { min: 8, max: 30 }
     };
 
     const { min, max } = ranges[type];

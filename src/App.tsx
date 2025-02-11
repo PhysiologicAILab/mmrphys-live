@@ -4,7 +4,6 @@ import { FaceDetector } from './utils/faceDetector';
 import { SignalProcessor } from './utils/signalProcessor';
 import VideoDisplay from './components/VideoDisplay';
 import Controls from './components/Controls';
-import VitalSignsChart from './components/VitalSignsChart';
 import VitalSignsChartWrapper from './components/VitalSignsChartWrapper';
 import StatusMessage from './components/StatusMessage';
 import type { InferenceResult } from './utils/modelInference';
@@ -48,10 +47,9 @@ interface WorkerMessage {
 }
 
 const INFERENCE_INTERVAL = 2000; // 2 seconds
-const REQUIRED_FRAMES = 150; // 5 seconds at 30fps
 const WORKER_TIMEOUT = 15000; // 15 seconds for worker initialization
 const MAX_FACE_MISSING_TIME = 3000; // 3 seconds before showing face detection warning
-
+const FALLBACK_DETECTION_INTERVAL = 1000; // 1 second for center crop detection fallback
 
 const App: React.FC = () => {
     // State management
@@ -75,6 +73,11 @@ const App: React.FC = () => {
 
     // Last face detection time tracking
     const lastFaceDetectionTime = useRef(0);
+    const fallbackDetectionInterval = useRef<number | null>(null);
+
+    // Add a new ref for signal processing worker
+    const signalProcessingWorkerRef = useRef<Worker | null>(null);    
+
 
     // Refs for components that need to persist between renders
     const componentsRef = useRef<ComponentRefs>({
@@ -118,21 +121,43 @@ const App: React.FC = () => {
         });
     }, []);
 
-    // Update face detection status
+    // Update face detection status with fallback mechanism
     const updateFaceDetectionStatus = useCallback((detected: boolean) => {
         const currentTime = Date.now();
 
         if (detected) {
             lastFaceDetectionTime.current = currentTime;
+
+            // Clear fallback interval if face is detected
+            if (fallbackDetectionInterval.current) {
+                clearInterval(fallbackDetectionInterval.current);
+                fallbackDetectionInterval.current = null;
+            }
+
             if (!faceDetected) {
                 setFaceDetected(true);
                 updateStatus('Face detected', 'success');
             }
-        } else if (currentTime - lastFaceDetectionTime.current > MAX_FACE_MISSING_TIME) {
-            setFaceDetected(false);
-            updateStatus('Please position your face in the frame', 'error');
+        } else {
+            // If face hasn't been detected for too long, switch to center crop
+            if (currentTime - lastFaceDetectionTime.current > MAX_FACE_MISSING_TIME) {
+                setFaceDetected(false);
+                updateStatus('Using center crop for processing', 'warning');
+
+                // Set up fallback detection interval if not already set
+                if (!fallbackDetectionInterval.current) {
+                    fallbackDetectionInterval.current = window.setInterval(() => {
+                        const { videoProcessor } = componentsRef.current;
+                        if (videoProcessor) {
+                            videoProcessor.useCenterCrop();
+                        }
+                    }, FALLBACK_DETECTION_INTERVAL);
+                }
+            }
         }
     }, [faceDetected, updateStatus]);
+
+
 
     // Device compatibility check
     const checkDeviceSupport = useCallback(async () => {
@@ -198,6 +223,7 @@ const App: React.FC = () => {
     }, [isCapturing]);
 
 
+
     const initializeWorker = useCallback(async () => {
         return new Promise<void>((resolve, reject) => {
             let initTimeoutId: NodeJS.Timeout;
@@ -214,13 +240,13 @@ const App: React.FC = () => {
             const handleError = (event: ErrorEvent) => {
                 cleanup();
                 const errorMessage = event.message || 'Unknown worker error';
-                console.error('Worker initialization error:', errorMessage);
+                console.error('Worker initialization error:', errorMessage, event);
                 worker?.terminate();
                 reject(new Error(errorMessage));
             };
 
             const handleMessage = (e: MessageEvent<WorkerMessage>) => {
-                console.log('Worker message received:', e.data); // Log all worker messages
+                console.log('Worker message received:', e.data);
                 if (e.data.type === 'init') {
                     cleanup();
 
@@ -274,6 +300,7 @@ const App: React.FC = () => {
         });
     }, [handleInferenceResults, updateStatus]);
 
+
     // Initialization of all components
     const initializeComponents = useCallback(async () => {
         try {
@@ -306,6 +333,22 @@ const App: React.FC = () => {
 
             componentsRef.current.signalProcessor = new SignalProcessor();
 
+            signalProcessingWorkerRef.current = new Worker(
+                new URL('./workers/signalProcessingWorker.ts', import.meta.url),
+                { type: 'module' }
+            );
+
+            // Setup message handler for signal processing
+            signalProcessingWorkerRef.current.onmessage = (e) => {
+                if (e.data.type === 'process' && e.data.status === 'success') {
+                    setVitalSigns(prev => ({
+                        ...prev,
+                        heartRate: e.data.heartRate,
+                        respRate: e.data.respRate
+                    }));
+                }
+            };
+
             // Configure components
             if (componentsRef.current.signalProcessor) {
                 componentsRef.current.signalProcessor.setConfig(config);
@@ -335,44 +378,53 @@ const App: React.FC = () => {
 
         const { videoProcessor, faceDetector, inferenceWorker, lastInferenceTime } = componentsRef.current;
 
-        if (!videoProcessor || !faceDetector || !inferenceWorker) {
+        if (!videoProcessor || !inferenceWorker) {
             console.warn('Missing required components for frame processing');
             return;
         }
 
         const currentTime = Date.now();
-        const faceBox = faceDetector.getCurrentFaceBox();
 
+        // Try to get face box, but allow center crop as fallback
+        const faceBox = faceDetector?.getCurrentFaceBox() || null;
+
+        // If no face detected, force center crop
+        if (!faceBox) {
+            updateStatus('Using center crop for processing', 'warning');
+            componentsRef.current.videoProcessor.forceCenterCrop();
+        }        
+
+        // Update face detection status
         updateFaceDetectionStatus(!!faceBox);
 
-        if (faceBox && videoProcessor.isCapturing()) {
-            try {
-                const processedFrame = videoProcessor.processFrame(faceBox);
+        try {
+            // Process frame with either face box or center crop
+            const processedFrame = videoProcessor.processFrame(faceBox);
 
-                if (processedFrame) {
-                    videoProcessor.updateFrameBuffer(processedFrame);
+            if (processedFrame) {
+                videoProcessor.updateFrameBuffer(processedFrame);
 
-                    const progress = videoProcessor.getBufferUsagePercentage();
-                    setBufferProgress(progress);
+                const progress = videoProcessor.getBufferUsagePercentage();
+                setBufferProgress(progress);
 
-                    const hasMinFrames = videoProcessor.hasMinimumFrames();
-                    if (hasMinFrames !== hasMinimumFrames) {
-                        setHasMinimumFrames(hasMinFrames);
-                    }
-
-                    // Run inference when we have enough frames
-                    if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
-                        const frameBuffer = videoProcessor.getFrameBuffer();
-                        inferenceWorker.postMessage({
-                            type: 'inference',
-                            data: { frameBuffer }
-                        });
-                        componentsRef.current.lastInferenceTime = currentTime;
-                    }
+                const hasMinFrames = videoProcessor.hasMinimumFrames();
+                if (hasMinFrames !== hasMinimumFrames) {
+                    setHasMinimumFrames(hasMinFrames);
+                    console.log(`Minimum frames reached: ${hasMinFrames}`);
                 }
-            } catch (error) {
-                console.error('Error processing frame:', error);
+
+                // Run inference when we have enough frames
+                if (hasMinFrames && currentTime - lastInferenceTime >= INFERENCE_INTERVAL) {
+                    const frameBuffer = videoProcessor.getFrameBuffer();
+                    inferenceWorker.postMessage({
+                        type: 'inference',
+                        data: { frameBuffer }
+                    });
+                    componentsRef.current.lastInferenceTime = currentTime;
+                }
             }
+        } catch (error) {
+            console.error('Error processing frame:', error);
         }
 
         // Continue frame processing only if still capturing
@@ -380,7 +432,7 @@ const App: React.FC = () => {
             componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
         }
     }, [isCapturing, updateFaceDetectionStatus, hasMinimumFrames]);
-
+    
     // Start video capture
     const startCapture = useCallback(async () => {
         try {
@@ -391,6 +443,9 @@ const App: React.FC = () => {
             }
 
             updateStatus('Starting capture...', 'info');
+
+            // Set capturing state before starting detection
+            faceDetector.setCapturingState(true);
 
             // First start video capture
             await videoProcessor.startCapture();
@@ -444,9 +499,16 @@ const App: React.FC = () => {
                 componentsRef.current.animationFrameId = null;
             }
 
-            // Stop face detection immediately
+            // Clear fallback detection interval
+            if (fallbackDetectionInterval.current) {
+                clearInterval(fallbackDetectionInterval.current);
+                fallbackDetectionInterval.current = null;
+            }
+
+            // Stop face detection
             if (faceDetector) {
                 console.log('Stopping face detection');
+                faceDetector.setCapturingState(false);
                 faceDetector.stopDetection();
                 await faceDetector.dispose();
                 componentsRef.current.faceDetector = null;
@@ -456,6 +518,7 @@ const App: React.FC = () => {
             if (videoProcessor) {
                 console.log('Stopping video capture');
                 await videoProcessor.stopCapture();
+                // videoProcessor.resetCropMode();
             }
 
             // Terminate worker
@@ -463,6 +526,12 @@ const App: React.FC = () => {
                 console.log('Terminating inference worker');
                 inferenceWorker.terminate();
                 componentsRef.current.inferenceWorker = null;
+            }
+
+            // Terminate signal processing worker
+            if (signalProcessingWorkerRef.current) {
+                signalProcessingWorkerRef.current.terminate();
+                signalProcessingWorkerRef.current = null;
             }
 
             // Reset all states
@@ -582,6 +651,7 @@ const App: React.FC = () => {
                     videoProcessor={componentsRef.current.videoProcessor}
                     faceDetected={faceDetected}
                     bufferProgress={bufferProgress}
+                    isCapturing={isCapturing}  // Add this prop
                 />
 
                 <div className="charts-section">
