@@ -1,5 +1,4 @@
 import { FaceBox } from './faceDetector';
-import { videoProcessingWorker } from "../workers/videoProcessingWorker";
 
 export interface ProcessedFrame {
     data: Uint8ClampedArray;
@@ -36,7 +35,25 @@ export class VideoProcessor {
     private faceDetectionWorker: Worker | null = null;
     private videoProcessingWorker: Worker | null = null;
     private displayFrameId: number | null = null;
-    private processingFrameId: ReturnType<typeof setTimeout> | null = null;  // Changed this type
+    private processingFrameId: ReturnType<typeof setTimeout> | null = null;
+    private isCenterCropMode: boolean = false;
+
+    // Existing properties
+    private cropMode: 'face' | 'center' = 'face';
+    private lastCropMode: 'face' | 'center' = 'face';
+
+    // New method to set crop mode
+    setCropMode(mode: 'face' | 'center'): void {
+        // Only update if the mode has changed
+        if (this.cropMode !== mode) {
+            // Store the previous mode for potential fallback or tracking
+            this.lastCropMode = this.cropMode;
+            this.cropMode = mode;
+
+            // Log the crop mode change
+            console.log(`Crop mode changed from ${this.lastCropMode} to ${this.cropMode}`);
+        }
+    }
 
     constructor(options: {
         frameBufferLength?: number,
@@ -88,24 +105,7 @@ export class VideoProcessor {
         this.startMetricsTracking();
     }
 
-    // Add method to force center crop
-    private forceCenterCrop(): void {
-        this.isCenterCropMode = true;
-        return
-    }
 
-
-    private initializeDisplay(): void {
-        if (!this.videoElement.videoWidth || !this.videoElement.videoHeight) {
-            requestAnimationFrame(() => this.initializeDisplay());
-            return;
-        }
-
-        // Force an initial display update
-        const centerCrop = this.createCenterCropFaceBox();
-        this.processForDisplay(centerCrop);
-    }
-    
     private createOptimizedCanvas(width: number, height: number): HTMLCanvasElement {
         const canvas = document.createElement('canvas');
         canvas.width = width;
@@ -139,69 +139,7 @@ export class VideoProcessor {
         }, 1000);
     }
 
-    private startFrameLoop(): void {
-        // Separate display loop for smooth video feed
-        const displayLoop = () => {
-            if (this.isCapturing()) {
-                const centerCrop = this.createCenterCropFaceBox();
-                this.processForDisplay(centerCrop);
-                this.displayFrameId = requestAnimationFrame(displayLoop);
-            }
-        };
-
-        // Start display loop
-        this.displayFrameId = requestAnimationFrame(displayLoop);
-
-        // Separate processing loop at lower frequency
-        const processLoop = () => {
-            if (this.isCapturing() && this.videoElement.readyState >= 2) {
-                const currentTime = performance.now();
-                if (currentTime - this.lastFrameTimestamp >= this.frameInterval) {
-                    this.captureFrameForProcessing();
-                    this.lastFrameTimestamp = currentTime;
-                }
-                this.processingFrameId = setTimeout(processLoop, this.frameInterval);
-            }
-        };
-
-        // Start processing loop
-        this.processingFrameId = setTimeout(processLoop, this.frameInterval);
-    }
-
-
-    private captureFrameForProcessing(): void {
-        try {
-            // Capture frame from video
-            const tempCanvas = this.createOptimizedCanvas(
-                this.videoElement.videoWidth,
-                this.videoElement.videoHeight
-            );
-            const tempCtx = tempCanvas.getContext('2d', {
-                willReadFrequently: true,
-                alpha: false
-            });
-
-            if (!tempCtx) return;
-
-            // Draw current video frame
-            tempCtx.drawImage(this.videoElement, 0, 0);
-            const frameData = tempCtx.getImageData(
-                0, 0,
-                this.videoElement.videoWidth,
-                this.videoElement.videoHeight
-            );
-
-            // Send to worker for processing
-            this.processFrameInWorkers(frameData);
-        } catch (error) {
-            console.error('Error capturing frame:', error);
-        }
-    }
-
-
-
     private async initializeWorkers(): Promise<void> {
-        // Create workers with error handling
         return new Promise((resolve, reject) => {
             let faceWorkerInitialized = false;
             let processWorkerInitialized = false;
@@ -261,8 +199,64 @@ export class VideoProcessor {
         });
     }
 
+    private startFrameLoop(): void {
+        // Separate display loop for smooth video feed
+        const displayLoop = () => {
+            if (this.isCapturing()) {
+                const centerCrop = this.createCenterCropFaceBox();
+                this.processForDisplay(centerCrop);
+                this.displayFrameId = requestAnimationFrame(displayLoop);
+            }
+        };
 
-    
+        // Start display loop
+        this.displayFrameId = requestAnimationFrame(displayLoop);
+
+        // Separate processing loop at lower frequency
+        const processLoop = () => {
+            if (this.isCapturing() && this.videoElement.readyState >= 2) {
+                const currentTime = performance.now();
+                if (currentTime - this.lastFrameTimestamp >= this.frameInterval) {
+                    this.captureFrameForProcessing();
+                    this.lastFrameTimestamp = currentTime;
+                }
+                this.processingFrameId = setTimeout(processLoop, this.frameInterval);
+            }
+        };
+
+        // Start processing loop
+        this.processingFrameId = setTimeout(processLoop, this.frameInterval);
+    }
+
+    private captureFrameForProcessing(): void {
+        try {
+            // Capture frame from video
+            const tempCanvas = this.createOptimizedCanvas(
+                this.videoElement.videoWidth,
+                this.videoElement.videoHeight
+            );
+            const tempCtx = tempCanvas.getContext('2d', {
+                willReadFrequently: true,
+                alpha: false
+            });
+
+            if (!tempCtx) return;
+
+            // Draw current video frame
+            tempCtx.drawImage(this.videoElement, 0, 0);
+            const frameData = tempCtx.getImageData(
+                0, 0,
+                this.videoElement.videoWidth,
+                this.videoElement.videoHeight
+            );
+
+            // Send to worker for processing
+            this.processFrameInWorkers(frameData);
+        } catch (error) {
+            console.error('Error capturing frame:', error);
+        }
+    }
+
     private processFrameInWorkers(imageData: ImageData): void {
         // Add more robust error handling
         try {
@@ -273,21 +267,32 @@ export class VideoProcessor {
                     return;
                 }
 
-                const messageHandler = (e: MessageEvent) => {
+                // Temporarily override onmessage and onerror
+                const originalOnMessage = this.faceDetectionWorker.onmessage;
+                const originalOnError = this.faceDetectionWorker.onerror;
+
+                this.faceDetectionWorker.onmessage = (e: MessageEvent) => {
                     if (e.data.type === 'detect') {
-                        this.faceDetectionWorker!.removeEventListener('message', messageHandler);
-                        resolve({ detection: e.data.detection, status: e.data.status });
+                        // Restore original handlers
+                        this.faceDetectionWorker!.onmessage = originalOnMessage;
+                        this.faceDetectionWorker!.onerror = originalOnError;
+
+                        resolve({
+                            detection: e.data.detection,
+                            status: e.data.status
+                        });
                     }
                 };
 
-                const errorHandler = (error: ErrorEvent) => {
-                    this.faceDetectionWorker!.removeEventListener('error', errorHandler);
+                this.faceDetectionWorker.onerror = (error: ErrorEvent) => {
+                    // Restore original handlers
+                    this.faceDetectionWorker!.onmessage = originalOnMessage;
+                    this.faceDetectionWorker!.onerror = originalOnError;
+
                     reject(error);
                 };
 
-                this.faceDetectionWorker.addEventListener('message', messageHandler);
-                this.faceDetectionWorker.addEventListener('error', errorHandler);
-
+                // Send message
                 this.faceDetectionWorker.postMessage({
                     type: 'detect',
                     imageData,
@@ -299,21 +304,29 @@ export class VideoProcessor {
             // Process video frame after face detection
             faceDetectionPromise
                 .then(({ detection }) => {
-                    if (!this.videoProcessingWorker) {
-                        throw new Error('Video processing worker not initialized');
-                    }
-
-                    // Clone the video frame for processing
-                    const processImageData = new ImageData(
-                        new Uint8ClampedArray(imageData.data),
-                        imageData.width,
-                        imageData.height
-                    );
-
                     return new Promise<ImageData>((resolve, reject) => {
-                        const messageHandler = (e: MessageEvent) => {
+                        if (!this.videoProcessingWorker) {
+                            reject(new Error('Video processing worker not initialized'));
+                            return;
+                        }
+
+                        // Clone the video frame for processing
+                        const processImageData = new ImageData(
+                            new Uint8ClampedArray(imageData.data),
+                            imageData.width,
+                            imageData.height
+                        );
+
+                        // Temporarily override onmessage and onerror
+                        const originalOnMessage = this.videoProcessingWorker.onmessage;
+                        const originalOnError = this.videoProcessingWorker.onerror;
+
+                        this.videoProcessingWorker.onmessage = (e: MessageEvent) => {
                             if (e.data.type === 'process') {
-                                this.videoProcessingWorker!.removeEventListener('message', messageHandler);
+                                // Restore original handlers
+                                this.videoProcessingWorker!.onmessage = originalOnMessage;
+                                this.videoProcessingWorker!.onerror = originalOnError;
+
                                 if (e.data.status === 'success') {
                                     resolve(e.data.processedData);
                                 } else {
@@ -322,14 +335,15 @@ export class VideoProcessor {
                             }
                         };
 
-                        const errorHandler = (error: ErrorEvent) => {
-                            this.videoProcessingWorker!.removeEventListener('error', errorHandler);
+                        this.videoProcessingWorker.onerror = (error: ErrorEvent) => {
+                            // Restore original handlers
+                            this.videoProcessingWorker!.onmessage = originalOnMessage;
+                            this.videoProcessingWorker!.onerror = originalOnError;
+
                             reject(error);
                         };
 
-                        this.videoProcessingWorker.addEventListener('message', messageHandler);
-                        this.videoProcessingWorker.addEventListener('error', errorHandler);
-
+                        // Send message
                         this.videoProcessingWorker.postMessage({
                             type: 'process',
                             imageData: processImageData,
@@ -349,7 +363,6 @@ export class VideoProcessor {
         }
     }
 
-    // Modify startCapture to use the new frame loop
     async startCapture(): Promise<void> {
         try {
             if (this.mediaStream) {
@@ -399,46 +412,60 @@ export class VideoProcessor {
         }
     }
 
+    // Modify processFrame method to respect crop mode
     processFrame(faceBox: FaceBox | null): ImageData | null {
-        // Don't return early for display purposes, even if video isn't fully ready
-        if (!this.videoElement.videoWidth || !this.videoElement.videoHeight) {
-            return null;
-        }
+        // Determine how to process the frame based on crop mode
+        switch (this.cropMode) {
+            case 'face':
+                // Existing face detection logic
+                if (faceBox) {
+                    return this.processForInference(faceBox);
+                }
+                // Fallback to center crop if no face detected
+                return this.processCenterCrop();
 
-        // Always process display, even with null faceBox
-        this.processForDisplay(faceBox);
+            case 'center':
+                // Always use center crop
+                return this.processCenterCrop();
 
-        // Only process for inference if we have enough data
-        if (this.videoElement.readyState < 2) {
-            return null;
-        }
-
-        if (!faceBox || this.isCenterCropMode) {
-            faceBox = this.createCenterCropFaceBox();
-        }        
-        
-        const currentTime = performance.now();
-
-        if (currentTime - this.lastFrameTimestamp < this.frameInterval) {
-            return null;
-        }
-
-        try {
-            // If no face box, create a center crop for inference
-            const processingFaceBox = faceBox || this.createCenterCropFaceBox();
-
-            // Process for inference (9x9)
-            const processedFrame = this.processForInference(processingFaceBox);
-
-            this.frameCount++;
-            this.lastFrameTimestamp = currentTime;
-            return processedFrame;
-        } catch (error) {
-            console.error('Frame processing error:', error);
-            this.metrics.droppedFrames++;
-            return null;
+            default:
+                // Fallback to original behavior
+                return this.processForInference(faceBox);
         }
     }
+
+    // Optional: Method to reset to previous crop mode
+    resetCropMode(): void {
+        this.cropMode = this.lastCropMode;
+        console.log(`Crop mode reset to ${this.cropMode}`);
+    }
+
+    // Optional: Get current crop mode
+    getCurrentCropMode(): 'face' | 'center' {
+        return this.cropMode;
+    }
+
+    // New method to handle center crop processing
+    private processCenterCrop(): ImageData {
+        // Calculate center crop dimensions
+        const videoWidth = this.videoElement.videoWidth;
+        const videoHeight = this.videoElement.videoHeight;
+
+        const cropSize = Math.min(videoWidth, videoHeight);
+        const startX = Math.floor((videoWidth - cropSize) / 2);
+        const startY = Math.floor((videoHeight - cropSize) / 2);
+
+        const centerCropBox: FaceBox = {
+            x: startX,
+            y: startY,
+            width: cropSize,
+            height: cropSize
+        };
+
+        return this.processForInference(centerCropBox);
+    }
+
+
 
     private createCenterCropFaceBox(): FaceBox {
         const videoWidth = this.videoElement.videoWidth;
@@ -654,7 +681,6 @@ export class VideoProcessor {
     }
 
     private async cleanup(): Promise<void> {
-
         if (this.displayFrameId) {
             cancelAnimationFrame(this.displayFrameId);
             this.displayFrameId = null;
@@ -676,7 +702,7 @@ export class VideoProcessor {
             this.videoProcessingWorker = null;
         }
 
-        // Rest of cleanup code...
+        // Rest of cleanup code
         if (this.mediaStream) {
             this.mediaStream.getTracks().forEach(track => track.stop());
             this.mediaStream = null;
@@ -718,4 +744,4 @@ export class VideoProcessor {
     isCapturing(): boolean {
         return !!this.mediaStream && this.mediaStream.active;
     }
-}
+}            

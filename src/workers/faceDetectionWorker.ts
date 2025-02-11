@@ -10,8 +10,8 @@ interface FaceDetectionMessage {
 
 // Robust environment configuration for web workers
 const setupFaceAPIEnvironment = () => {
-    // Override environment methods
-    const env = {
+    // Create a type-safe environment configuration
+    const env: Record<string, any> = {
         isNodejs: () => false,
         isBrowser: () => true,
         platform: 'browser',
@@ -33,17 +33,14 @@ const setupFaceAPIEnvironment = () => {
                     complete: true
                 };
             }
-        })
+        }),
+        monkeyPatch: () => { } // Add explicit monkeyPatch method
     };
 
     // Patch the face-api environment
     try {
-        Object.keys(env).forEach(key => {
-            (faceapi.env as any)[key] = env[key];
-        });
-
-        // Explicitly set methods that might be missing
-        faceapi.env.monkeyPatch = () => { };
+        // Use Object.assign to safely add properties
+        Object.assign(faceapi.env, env);
     } catch (error) {
         console.error('Failed to configure face-api environment:', error);
     }

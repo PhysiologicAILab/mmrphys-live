@@ -19,7 +19,7 @@ interface VitalSigns {
 
 interface Status {
     message: string;
-    type: 'info' | 'success' | 'error';
+    type: 'info' | 'success' | 'error' | 'warning';
     timestamp?: number;
 }
 
@@ -76,8 +76,7 @@ const App: React.FC = () => {
     const fallbackDetectionInterval = useRef<number | null>(null);
 
     // Add a new ref for signal processing worker
-    const signalProcessingWorkerRef = useRef<Worker | null>(null);    
-
+    const signalProcessingWorkerRef = useRef<Worker | null>(null);
 
     // Refs for components that need to persist between renders
     const componentsRef = useRef<ComponentRefs>({
@@ -110,7 +109,6 @@ const App: React.FC = () => {
     useEffect(() => {
         logComponentState();
     }, [isCapturing, hasMinimumFrames, faceDetected, bufferProgress, logComponentState]);
-
 
     // Update status with timestamp
     const updateStatus = useCallback((message: string, type: Status['type']) => {
@@ -149,14 +147,13 @@ const App: React.FC = () => {
                     fallbackDetectionInterval.current = window.setInterval(() => {
                         const { videoProcessor } = componentsRef.current;
                         if (videoProcessor) {
-                            videoProcessor.useCenterCrop();
+                            videoProcessor.setCropMode('center');
                         }
                     }, FALLBACK_DETECTION_INTERVAL);
                 }
             }
         }
     }, [faceDetected, updateStatus]);
-
 
 
     // Device compatibility check
@@ -325,6 +322,15 @@ const App: React.FC = () => {
 
             // Initialize components
             componentsRef.current.videoProcessor = new VideoProcessor();
+            // // Switch to center crop mode
+            // componentsRef.current.videoProcessor.setCropMode('center');
+
+            // // Switch back to face detection mode
+            // componentsRef.current.videoProcessor.setCropMode('face');
+
+            // // Reset to previous mode
+            // componentsRef.current.videoProcessor.resetCropMode();
+
 
             updateStatus('Initializing face detection...', 'info');
             const faceDetector = new FaceDetector();
@@ -370,6 +376,7 @@ const App: React.FC = () => {
     }, [checkDeviceSupport, initializeWorker, updateStatus]);
 
     // Process video frames with buffer tracking
+    // Process video frames with buffer tracking
     const processFrames = useCallback(() => {
         if (!isCapturing) {
             console.log('Frame processing stopped');
@@ -388,11 +395,11 @@ const App: React.FC = () => {
         // Try to get face box, but allow center crop as fallback
         const faceBox = faceDetector?.getCurrentFaceBox() || null;
 
-        // If no face detected, force center crop
+        // If no face detected, set center crop mode
         if (!faceBox) {
             updateStatus('Using center crop for processing', 'warning');
-            componentsRef.current.videoProcessor.forceCenterCrop();
-        }        
+            componentsRef.current.videoProcessor.setCropMode('center');
+        }
 
         // Update face detection status
         updateFaceDetectionStatus(!!faceBox);
@@ -432,7 +439,7 @@ const App: React.FC = () => {
             componentsRef.current.animationFrameId = requestAnimationFrame(processFrames);
         }
     }, [isCapturing, updateFaceDetectionStatus, hasMinimumFrames]);
-    
+
     // Start video capture
     const startCapture = useCallback(async () => {
         try {
@@ -651,7 +658,7 @@ const App: React.FC = () => {
                     videoProcessor={componentsRef.current.videoProcessor}
                     faceDetected={faceDetected}
                     bufferProgress={bufferProgress}
-                    isCapturing={isCapturing}  // Add this prop
+                    isCapturing={isCapturing}
                 />
 
                 <div className="charts-section">
