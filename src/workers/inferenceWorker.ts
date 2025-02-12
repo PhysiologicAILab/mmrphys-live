@@ -313,11 +313,17 @@ class InferenceWorker {
         }
 
         try {
-            const exportedData: ExportData = this.signalProcessor.getExportData();
+            // Use a more robust export method
+            const exportedData = JSON.stringify(
+                this.signalProcessor.getExportData(),
+                null,
+                2 // Pretty print
+            );
+
             self.postMessage({
                 type: 'export',
                 status: 'success',
-                data: exportedData
+                data: exportedData // Ensure string export
             });
         } catch (error) {
             console.error('Export error:', error);

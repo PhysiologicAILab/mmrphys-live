@@ -15,23 +15,25 @@ export interface SignalMetrics {
 export class SignalAnalyzer {
     private static readonly FREQ_RANGES = {
         heart: {
-            minFreq: 0.8,  // 48 BPM
-            maxFreq: 3.0   // 180 BPM
+            minFreq: 0.8,   // 48 BPM
+            maxFreq: 3.0    // 180 BPM
         },
         resp: {
-            minFreq: 0.1,  // 6 breaths/minute
-            maxFreq: 0.5   // 30 breaths/minute
+            minFreq: 0.1,   // 6 breaths/minute
+            maxFreq: 0.5    // 30 breaths/minute
         }
     };
 
     private static readonly RATE_RANGES = {
         heart: {
             min: 40,
-            max: 180
+            max: 180,
+            default: 75
         },
         resp: {
             min: 6,
-            max: 30
+            max: 30,
+            default: 15
         }
     };
 
@@ -45,74 +47,95 @@ export class SignalAnalyzer {
     ): SignalMetrics {
         // Validate input
         if (!signal?.length || signal.length < samplingRate) {
-            throw new Error('Invalid signal input');
+            return this.getDefaultMetrics(type);
         }
 
-        // Assess signal quality
-        const quality = this.assessSignalQuality(signal);
+        try {
+            // Remove DC component and normalize
+            const meanNormalized = this.removeDC(signal);
+            const windowed = this.applyWindow(meanNormalized);
 
-        // If signal quality is too poor, return default values
-        if (quality.signalStrength < 0.01 || quality.artifactRatio > 0.1) {
+            // Compute FFT
+            const fftResult = this.computeFFT(windowed);
+            const { minFreq, maxFreq } = this.FREQ_RANGES[type];
+
+            // Find dominant frequency
+            const peakFreq = this.findDominantFrequency(fftResult, samplingRate, minFreq, maxFreq);
+
+            // Convert to rate
+            const rate = peakFreq * 60;
+
+            // Assess signal quality
+            const quality = this.assessSignalQuality(signal);
+
+            // Validate rate
+            const validatedRate = this.validateRate(rate, type, quality);
+
             return {
-                rate: type === 'heart' ? 75 : 15, // Physiological defaults
+                rate: validatedRate,
                 quality
             };
+        } catch (error) {
+            console.warn(`Signal analysis error for ${type}:`, error);
+            return this.getDefaultMetrics(type);
         }
+    }
 
-        // Process signal
-        const meanNormalized = this.removeDC(signal);
-        const windowed = this.applyWindow(meanNormalized);
-        const fftResult = this.computeFFT(windowed);
-        const { minFreq, maxFreq } = this.FREQ_RANGES[type];
-
-        // Calculate rate
-        const rate = this.findDominantFrequency(fftResult, samplingRate, minFreq, maxFreq);
-
-        // Validate rate
-        const validRange = this.RATE_RANGES[type];
-        const validatedRate = this.validateRate(rate, type);
-
+    private static getDefaultMetrics(type: 'heart' | 'resp'): SignalMetrics {
+        const defaultRates = this.RATE_RANGES[type];
         return {
-            rate: validatedRate,
-            quality
+            rate: defaultRates.default,
+            quality: {
+                snr: 0,
+                quality: 'poor',
+                signalStrength: 0,
+                artifactRatio: 1
+            }
         };
     }
 
-    private static validateRate(rate: number, type: 'heart' | 'resp'): number {
+    private static validateRate(
+        rate: number,
+        type: 'heart' | 'resp',
+        quality: SignalMetrics['quality']
+    ): number {
         const range = this.RATE_RANGES[type];
-        if (rate < range.min || rate > range.max) {
-            console.warn(`${type} rate outside physiological range:`, rate);
-            return type === 'heart' ? 75 : 15;
+
+        // If signal quality is poor, return default
+        if (quality.quality === 'poor' || quality.artifactRatio > 0.2) {
+            return range.default;
         }
-        return rate;
+
+        // Constrain rate within physiological range
+        return Math.min(Math.max(rate, range.min), range.max);
     }
 
-    private static assessSignalQuality(signal: number[]): SignalQuality {
+    private static assessSignalQuality(signal: number[]): SignalMetrics['quality'] {
         const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
         const variance = signal.reduce((a, b) => a + (b - mean) ** 2, 0) / signal.length;
         const maxAmp = Math.max(...signal.map(Math.abs));
 
-        const snr = 10 * Math.log10(variance / (maxAmp * 0.1));
-        const signalStrength = maxAmp;
-        const artifactRatio = signal.filter(x => Math.abs(x) > 3 * variance).length / signal.length;
+        const snr = variance > 0
+            ? 10 * Math.log10(variance / (maxAmp * 0.1))
+            : 0;
 
-        // Determine quality level
-        let quality: 'excellent' | 'good' | 'moderate' | 'poor';
+        const signalStrength = maxAmp;
+        const artifactRatio = signal.filter(x => Math.abs(x) > 3 * Math.sqrt(variance)).length / signal.length;
+
+        let quality: SignalMetrics['quality']['quality'] = 'poor';
         if (snr >= 10 && artifactRatio < 0.05) {
             quality = 'excellent';
         } else if (snr >= 5 && artifactRatio < 0.1) {
             quality = 'good';
         } else if (snr >= 0 && artifactRatio < 0.2) {
             quality = 'moderate';
-        } else {
-            quality = 'poor';
         }
 
         return {
-            snr,
+            snr: Math.max(0, snr),
+            quality,
             signalStrength,
-            artifactRatio,
-            quality
+            artifactRatio
         };
     }
 

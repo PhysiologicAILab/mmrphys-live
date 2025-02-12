@@ -1,8 +1,8 @@
 // src/utils/SignalProcessor.ts
 
+import { ExportData } from '../types';
 import { ButterworthFilter } from './butterworthFilter';
 import { SignalAnalyzer, SignalMetrics } from './signalAnalysis';
-import { ModelConfig } from './modelInference';
 
 export interface SignalBuffer {
     raw: number[];
@@ -66,22 +66,25 @@ export class SignalProcessor {
             resp: number[]
         }
     } {
-        // Update buffers with new signals
-        this.updateBuffer(this.bvpBuffer, bvpSignal);
-        this.updateBuffer(this.respBuffer, respSignal);
+        // Preprocess signals to remove extreme artifacts
+        const cleanedBvpSignal = this.preprocessSignal(bvpSignal);
+        const cleanedRespSignal = this.preprocessSignal(respSignal);
+
+        // Update buffers with cleaned signals
+        this.updateBuffer(this.bvpBuffer, cleanedBvpSignal);
+        this.updateBuffer(this.respBuffer, cleanedRespSignal);
         this.timestamps.push(timestamp);
 
         // Maintain buffer size
         this.maintainBufferSize();
 
-        // Process BVP signal
+        // Process signals
         const bvpMetrics = this.processSignal(
             this.bvpBuffer,
             'bvp',
             timestamp
         );
 
-        // Process RESP signal
         const respMetrics = this.processSignal(
             this.respBuffer,
             'resp',
@@ -97,6 +100,22 @@ export class SignalProcessor {
             displayData
         };
     }
+
+    // New preprocessing method to remove extreme artifacts
+    private preprocessSignal(signal: number[]): number[] {
+        if (signal.length === 0) return signal;
+
+        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+        const stdDev = Math.sqrt(
+            signal.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / signal.length
+        );
+
+        // Remove outliers beyond 3 standard deviations
+        return signal.map(val =>
+            Math.abs(val - mean) <= 3 * stdDev ? val : mean
+        );
+    }
+
 
     private updateBuffer(buffer: SignalBuffer, newSignal: number[]): void {
         // Add new signals to raw buffer
@@ -127,10 +146,18 @@ export class SignalProcessor {
         return signal.map(x => x - mean);
     }
 
+    // Optional: Enhanced normalization
     private normalizeSignal(signal: number[]): number[] {
-        const max = Math.max(...signal.map(Math.abs));
-        return signal.map(x => x / (max || 1));
+        if (signal.length === 0) return signal;
+
+        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+        const stdDev = Math.sqrt(
+            signal.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / signal.length
+        );
+
+        return signal.map(val => (val - mean) / (stdDev || 1));
     }
+
 
     private maintainBufferSize(): void {
         const maxSize = this.MAX_BUFFER;
@@ -210,12 +237,12 @@ export class SignalProcessor {
         };
     }
 
-    getExportData(): any {
+    getExportData(): ExportData {
         return {
             metadata: {
                 samplingRate: this.fps,
-                startTime: this.timestamps[0],
-                endTime: this.timestamps[this.timestamps.length - 1],
+                startTime: this.timestamps[0] || new Date().toISOString(),
+                endTime: this.timestamps[this.timestamps.length - 1] || new Date().toISOString(),
                 totalSamples: this.timestamps.length
             },
             signals: {
@@ -229,8 +256,18 @@ export class SignalProcessor {
                 }
             },
             rates: {
-                heart: this.bvpBuffer.rates,
-                respiratory: this.respBuffer.rates
+                heart: this.bvpBuffer.rates.map(rate => ({
+                    timestamp: rate.timestamp,
+                    value: rate.value,
+                    snr: rate.snr,
+                    quality: rate.quality
+                })),
+                respiratory: this.respBuffer.rates.map(rate => ({
+                    timestamp: rate.timestamp,
+                    value: rate.value,
+                    snr: rate.snr,
+                    quality: rate.quality
+                }))
             },
             timestamps: this.timestamps
         };
