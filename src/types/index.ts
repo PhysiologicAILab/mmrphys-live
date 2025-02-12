@@ -2,6 +2,15 @@
 
 import { VideoProcessor } from '../utils/videoProcessor';
 
+// Performance Metrics
+export interface PerformanceMetrics {
+    averageUpdateTime: number;
+    updateCount: number;
+    bufferUtilization: number;
+}
+
+
+
 export interface SignalData {
     raw: Float32Array;
     filtered: Float32Array;
@@ -12,6 +21,7 @@ export interface RateData {
     timestamp: string;
     value: number;
     snr: number;
+    quality: 'excellent' | 'good' | 'moderate' | 'poor';
 }
 
 export interface VideoDisplayProps {
@@ -21,14 +31,17 @@ export interface VideoDisplayProps {
     isCapturing: boolean;
 }
 
-// Component Props Types
 export interface VitalSignsChartProps {
     title: string;
-    data: SignalState;
+    data: number[];
+    filteredData?: number[];
     type: 'bvp' | 'resp';
     isReady: boolean;
     rate: number;
     snr: number;
+    quality?: 'excellent' | 'good' | 'moderate' | 'poor';
+    signalStrength?: number;
+    artifactRatio?: number;
 }
 
 export interface StatusMessageProps {
@@ -36,6 +49,7 @@ export interface StatusMessageProps {
     type: 'info' | 'success' | 'error' | 'warning';
 }
 
+// Vital Signs Interface
 export interface VitalSigns {
     heartRate: number;
     respRate: number;
@@ -43,6 +57,14 @@ export interface VitalSigns {
     respSignal: number[];
     bvpSNR: number;
     respSNR: number;
+    filteredBvpSignal: number[];
+    filteredRespSignal: number[];
+    bvpQuality: 'excellent' | 'good' | 'moderate' | 'poor';
+    respQuality: 'excellent' | 'good' | 'moderate' | 'poor';
+    bvpSignalStrength: number;
+    respSignalStrength: number;
+    bvpArtifactRatio: number;
+    respArtifactRatio: number;
 }
 
 export interface ControlsProps {
@@ -58,17 +80,29 @@ export interface StatusMessage {
     type: 'info' | 'success' | 'error';
 }
 
-export interface SignalBuffers {
-    bvp: SignalData;
-    resp: SignalData;
-    heartRates: RateData[];
-    respRates: RateData[];
-}
-
+// Signal Metrics
 export interface SignalMetrics {
     rate: number;
-    snr: number;
-    quality: 'excellent' | 'good' | 'moderate' | 'poor';
+    quality: {
+        snr: number;
+        quality: 'excellent' | 'good' | 'moderate' | 'poor';
+        signalStrength?: number;
+        artifactRatio?: number;
+    };
+}
+
+export interface SignalBuffers {
+    bvp: {
+        raw: number[];
+        filtered: number[];
+        metrics: SignalMetrics;
+    };
+    resp: {
+        raw: number[];
+        filtered: number[];
+        metrics: SignalMetrics;
+    };
+    timestamp: string;
 }
 
 export interface SignalState {
@@ -84,6 +118,7 @@ export interface ProcessedSignals {
     inferenceTime?: number;
 }
 
+// Export Data Structure
 export interface ExportData {
     metadata: {
         samplingRate: number;
@@ -99,19 +134,21 @@ export interface ExportData {
         resp: {
             raw: number[];
             filtered: number[];
-        };
+        }
     };
     rates: {
         heart: RateData[];
         respiratory: RateData[];
     };
     timestamps: string[];
+    performance?: PerformanceMetrics;
 }
 
+// Worker Message Type
 export interface WorkerMessage {
     type: string;
     status: 'success' | 'error';
-    results?: ProcessedSignals;
+    results?: any;
     error?: string;
     data?: string;
 }

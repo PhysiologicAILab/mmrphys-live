@@ -27,19 +27,27 @@ ChartJS.register(
 interface VitalSignsChartProps {
     title: string;
     data: number[];
+    filteredData?: number[];
     rate: number;
     snr: number;
+    quality?: 'excellent' | 'good' | 'moderate' | 'poor';
     type: 'bvp' | 'resp';
     isReady: boolean;
+    signalStrength?: number;
+    artifactRatio?: number;
 }
 
 const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     title = '',
     data = [],
+    filteredData,
     rate = 0,
     snr = 0,
+    quality = 'poor',
     type = 'bvp',
-    isReady = false
+    isReady = false,
+    signalStrength = 0,
+    artifactRatio = 0
 }) => {
     // Chart options with proper type safety
     const chartOptions = useMemo(() => ({
@@ -74,16 +82,19 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         },
         plugins: {
             legend: {
-                display: false
+                display: true
             },
             tooltip: {
                 enabled: true,
                 mode: 'index' as const,
                 intersect: false,
                 callbacks: {
-                    label: (context: { parsed: { y: number } }) => {
+                    label: (context: { parsed: { y: number }, datasetIndex: number }) => {
                         const value = context.parsed.y;
-                        return `${type === 'bvp' ? 'BVP' : 'Resp'}: ${value.toFixed(3)}`;
+                        const label = context.datasetIndex === 0
+                            ? `Raw ${type === 'bvp' ? 'BVP' : 'Resp'}`
+                            : `Filtered ${type === 'bvp' ? 'BVP' : 'Resp'}`;
+                        return `${label}: ${value.toFixed(3)}`;
                     }
                 }
             },
@@ -103,7 +114,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         labels: Array.isArray(data) ? data.map((_, i) => (i / 30).toFixed(1)) : [],
         datasets: [
             {
-                label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
+                label: type === 'bvp' ? 'Raw Blood Volume Pulse' : 'Raw Respiratory Signal',
                 data: Array.isArray(data) ? data : [],
                 borderColor: type === 'bvp' ? 'rgb(75, 192, 192)' : 'rgb(255, 99, 132)',
                 backgroundColor: type === 'bvp'
@@ -114,9 +125,23 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 borderWidth: 2,
                 pointRadius: 0,
                 pointHoverRadius: 4
-            }
+            },
+            ...(filteredData ? [{
+                label: type === 'bvp' ? 'Filtered Blood Volume Pulse' : 'Filtered Respiratory Signal',
+                data: filteredData,
+                borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
+                backgroundColor: type === 'bvp'
+                    ? 'rgba(0, 105, 105, 0.2)'
+                    : 'rgba(220, 53, 69, 0.2)',
+                fill: true,
+                tension: 0.4,
+                borderWidth: 2,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                borderDash: [5, 5]
+            }] : [])
         ]
-    }), [data, type]);
+    }), [data, filteredData, type]);
 
     // Loading/empty state
     if (!isReady || !Array.isArray(data) || data.length === 0) {
@@ -130,12 +155,13 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         );
     }
 
-    const getSignalQualityClass = (snrValue: number): string => {
-        if (!isFinite(snrValue)) return 'poor';
-        if (snrValue >= 10) return 'excellent';
-        if (snrValue >= 5) return 'good';
-        if (snrValue >= 0) return 'moderate';
-        return 'poor';
+    const getSignalQualityClass = (signalQuality: string): string => {
+        switch (signalQuality) {
+            case 'excellent': return 'excellent';
+            case 'good': return 'good';
+            case 'moderate': return 'moderate';
+            default: return 'poor';
+        }
     };
 
     const getRateClass = (currentRate: number): string => {
@@ -169,13 +195,22 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                         {type === 'bvp' ? 'Heart Rate' : 'Respiratory Rate'}
                     </div>
                 </div>
-                <div className={`snr-metric p-2 rounded ${getSignalQualityClass(snr)}`}>
+                <div className={`snr-metric p-2 rounded ${getSignalQualityClass(quality)}`}>
                     <div className="text-lg font-bold">
                         {Number(snr).toFixed(1)} dB
                     </div>
                     <div className="text-sm opacity-75">
-                        Signal Quality
+                        {quality.charAt(0).toUpperCase() + quality.slice(1)} Quality
                     </div>
+                </div>
+            </div>
+            {/* Additional Metrics */}
+            <div className="additional-metrics mt-2 grid grid-cols-2 gap-2 text-xs">
+                <div className="metric">
+                    <strong>Signal Strength:</strong> {signalStrength.toFixed(4)}
+                </div>
+                <div className="metric">
+                    <strong>Artifact Ratio:</strong> {(artifactRatio * 100).toFixed(2)}%
                 </div>
             </div>
         </div>

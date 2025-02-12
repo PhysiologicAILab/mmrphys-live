@@ -1,122 +1,69 @@
 // src/hooks/useVitalSigns.ts
 import { useState, useEffect, useCallback } from 'react';
-import { SignalMetrics } from '@/utils/signalAnalysis';
-import { SignalBuffers, PerformanceMetrics } from '@/utils/signalProcessor';
+import { VitalSigns } from '@/types';
 
 interface UseVitalSignsProps {
     isCapturing: boolean;
     onError: (error: Error) => void;
 }
 
-interface VitalSignsState {
-    bvp: {
-        signal: number[];
-        filtered: number[];
-        rate: number;
-        metrics: SignalMetrics;
-    };
-    resp: {
-        signal: number[];
-        filtered: number[];
-        rate: number;
-        metrics: SignalMetrics;
-    };
-}
-
 export const useVitalSigns = ({ isCapturing, onError }: UseVitalSignsProps) => {
-    // Vital signs state with full signal data and metrics
-    const [vitalSigns, setVitalSigns] = useState<VitalSignsState>({
-        bvp: {
-            signal: [],
-            filtered: [],
-            rate: 0,
-            metrics: {
-                rate: 0,
-                quality: {
-                    snr: 0,
-                    signalStrength: 0,
-                    artifactRatio: 0,
-                    quality: 'poor'
-                }
-            }
-        },
-        resp: {
-            signal: [],
-            filtered: [],
-            rate: 0,
-            metrics: {
-                rate: 0,
-                quality: {
-                    snr: 0,
-                    signalStrength: 0,
-                    artifactRatio: 0,
-                    quality: 'poor'
-                }
-            }
-        }
+    const [vitalSigns, setVitalSigns] = useState<VitalSigns>({
+        heartRate: 0,
+        respRate: 0,
+        bvpSignal: [],
+        respSignal: [],
+        bvpSNR: 0,
+        respSNR: 0,
+        filteredBvpSignal: [],
+        filteredRespSignal: [],
+        bvpQuality: 'poor',
+        respQuality: 'poor',
+        bvpSignalStrength: 0,
+        respSignalStrength: 0,
+        bvpArtifactRatio: 0,
+        respArtifactRatio: 0
     });
 
-    // Performance metrics state
-    const [performance, setPerformance] = useState<PerformanceMetrics>({
+    const [performance, setPerformance] = useState({
         averageUpdateTime: 0,
         updateCount: 0,
         bufferUtilization: 0
     });
 
-    // Update vital signs from signal processor output
-    const updateSignals = useCallback((data: SignalBuffers) => {
-        setVitalSigns({
-            bvp: {
-                signal: data.bvp.raw,
-                filtered: data.bvp.filtered,
-                rate: data.bvp.metrics.rate,
-                metrics: data.bvp.metrics
-            },
-            resp: {
-                signal: data.resp.raw,
-                filtered: data.resp.filtered,
-                rate: data.resp.metrics.rate,
-                metrics: data.resp.metrics
-            }
-        });
+    // Update vital signs
+    const updateVitalSigns = useCallback((data: Partial<VitalSigns>) => {
+        setVitalSigns(prev => ({
+            ...prev,
+            ...data
+        }));
     }, []);
 
     // Update performance metrics
-    const updatePerformance = useCallback((metrics: PerformanceMetrics) => {
-        setPerformance(metrics);
+    const updatePerformance = useCallback((metrics: Partial<typeof performance>) => {
+        setPerformance(prev => ({
+            ...prev,
+            ...metrics
+        }));
     }, []);
 
     // Reset all data
     const resetData = useCallback(() => {
         setVitalSigns({
-            bvp: {
-                signal: [],
-                filtered: [],
-                rate: 0,
-                metrics: {
-                    rate: 0,
-                    quality: {
-                        snr: 0,
-                        signalStrength: 0,
-                        artifactRatio: 0,
-                        quality: 'poor'
-                    }
-                }
-            },
-            resp: {
-                signal: [],
-                filtered: [],
-                rate: 0,
-                metrics: {
-                    rate: 0,
-                    quality: {
-                        snr: 0,
-                        signalStrength: 0,
-                        artifactRatio: 0,
-                        quality: 'poor'
-                    }
-                }
-            }
+            heartRate: 0,
+            respRate: 0,
+            bvpSignal: [],
+            respSignal: [],
+            bvpSNR: 0,
+            respSNR: 0,
+            filteredBvpSignal: [],
+            filteredRespSignal: [],
+            bvpQuality: 'poor',
+            respQuality: 'poor',
+            bvpSignalStrength: 0,
+            respSignalStrength: 0,
+            bvpArtifactRatio: 0,
+            respArtifactRatio: 0
         });
         setPerformance({
             averageUpdateTime: 0,
@@ -132,44 +79,11 @@ export const useVitalSigns = ({ isCapturing, onError }: UseVitalSignsProps) => {
         }
     }, [isCapturing, resetData]);
 
-    // Helper functions for UI components
-    const getDisplaySignals = useCallback(() => ({
-        bvp: vitalSigns.bvp.filtered,
-        resp: vitalSigns.resp.filtered
-    }), [vitalSigns]);
-
-    const getRates = useCallback(() => ({
-        heart: {
-            value: vitalSigns.bvp.rate,
-            quality: vitalSigns.bvp.metrics.quality.quality
-        },
-        resp: {
-            value: vitalSigns.resp.rate,
-            quality: vitalSigns.resp.metrics.quality.quality
-        }
-    }), [vitalSigns]);
-
-    const getSignalQuality = useCallback(() => ({
-        bvp: vitalSigns.bvp.metrics.quality,
-        resp: vitalSigns.resp.metrics.quality
-    }), [vitalSigns]);
-
     return {
-        // Raw data
         vitalSigns,
         performance,
-
-        // Update functions
-        updateSignals,
+        updateVitalSigns,
         updatePerformance,
-        resetData,
-
-        // Helper functions for UI
-        getDisplaySignals,
-        getRates,
-        getSignalQuality
+        resetData
     };
 };
-
-// Type exports for consumers
-export type { VitalSignsState };

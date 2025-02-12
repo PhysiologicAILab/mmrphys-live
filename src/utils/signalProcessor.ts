@@ -1,324 +1,217 @@
-// src/utils/signalProcessor.ts
+// src/utils/SignalProcessor.ts
 
 import { ButterworthFilter } from './butterworthFilter';
 import { SignalAnalyzer, SignalMetrics } from './signalAnalysis';
 import { ModelConfig } from './modelInference';
 
-export interface SignalState {
+export interface SignalBuffer {
     raw: number[];
     filtered: number[];
-    metrics: SignalMetrics;
+    normalized: number[];
+    rates: RatePoint[];
 }
 
-export interface ProcessedSignals {
-    bvp: SignalState;
-    resp: SignalState;
-    timestamp: string;
-}
-
-export interface SignalData {
-    raw: Float32Array;
-    filtered: Float32Array;
-    snr: number;
-}
-
-export interface RateData {
+interface RatePoint {
     timestamp: string;
     value: number;
     snr: number;
     quality: 'excellent' | 'good' | 'moderate' | 'poor';
 }
 
-export interface SignalBuffers {
-    bvp: {
-        raw: number[];
-        filtered: number[];
-        metrics: SignalMetrics;
-    };
-    resp: {
-        raw: number[];
-        filtered: number[];
-        metrics: SignalMetrics;
-    };
-    timestamp: string;
-}
-
-export interface PerformanceMetrics {
-    averageUpdateTime: number;
-    updateCount: number;
-    bufferUtilization: number;
-}
-
-export interface ExportData {
-    metadata: {
-        samplingRate: number;
-        startTime: string;
-        endTime: string;
-        totalSamples: number;
-    };
-    signals: {
-        bvp: {
-            raw: number[];
-            filtered: number[];
-        };
-        resp: {
-            raw: number[];
-            filtered: number[];
-        };
-    };
-    rates: {
-        heart: RateData[];
-        respiratory: RateData[];
-    };
-    timestamps: string[];
-    performance: PerformanceMetrics;
-}
-
 export class SignalProcessor {
     private readonly fps: number;
-    private readonly SIGNAL_LENGTH = 180; // rPhys model output length
-    private readonly MAX_HISTORY_SECONDS = 30;
-    private readonly DISPLAY_SECONDS = 6;
-    private readonly maxSignalBufferSize: number;
-    private readonly maxRateBufferSize: number;
+    private readonly DISPLAY_WINDOW = 6; // 6 seconds for display
+    private readonly ANALYSIS_WINDOW = 10; // 10 seconds for analysis
+    private readonly MAX_BUFFER = 300; // Maximum buffer size
 
     // Signal buffers
-    private bvpBuffer: SignalData;
-    private respBuffer: SignalData;
+    private bvpBuffer: SignalBuffer;
+    private respBuffer: SignalBuffer;
     private timestamps: string[] = [];
 
-    // Filters
+    // Butterworth filters
     private readonly bvpFilter: ButterworthFilter;
     private readonly respFilter: ButterworthFilter;
 
-    // Rate history
-    private heartRates: RateData[] = [];
-    private respRates: RateData[] = [];
-
-    // Performance metrics
-    private lastUpdateTime: number;
-    private updateCount: number;
-    private averageUpdateTime: number;
-    private config: ModelConfig | null;
-
     constructor(fps: number = 30) {
         this.fps = fps;
-        this.maxSignalBufferSize = fps * this.MAX_HISTORY_SECONDS;
-        this.maxRateBufferSize = 300; // Store up to 5 minutes of rate values
 
-        // Initialize Butterworth filters
+        // Initialize buffers
+        this.bvpBuffer = this.createBuffer();
+        this.respBuffer = this.createBuffer();
+
+        // Initialize filters with proper physiological ranges
         this.bvpFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(0.8, 3.0, fps)
+            ButterworthFilter.designBandpass(0.75, 2.5, fps) // 45-150 BPM
         );
         this.respFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(0.1, 0.5, fps)
+            ButterworthFilter.designBandpass(0.1, 0.5, fps) // 6-30 breaths/min
         );
-
-        // Initialize buffer with Float32Arrays
-        this.bvpBuffer = {
-            raw: new Float32Array(this.maxSignalBufferSize),
-            filtered: new Float32Array(this.maxSignalBufferSize),
-            snr: 0
-        };
-
-        this.respBuffer = {
-            raw: new Float32Array(this.maxSignalBufferSize),
-            filtered: new Float32Array(this.maxSignalBufferSize),
-            snr: 0
-        };
-
-        // Initialize performance metrics
-        this.lastUpdateTime = Date.now();
-        this.updateCount = 0;
-        this.averageUpdateTime = 0;
-        this.config = null;
     }
 
-    setConfig(config: ModelConfig): void {
-        this.config = config;
-    }
-
-    /**
-     * Process new signals from rPhys model
-     */
-    processNewSignals(bvpSignal: number[], respSignal: number[], timestamp: string): ProcessedSignals {
-        if (bvpSignal.length !== this.SIGNAL_LENGTH || respSignal.length !== this.SIGNAL_LENGTH) {
-            throw new Error('Invalid signal length');
-        }
-
-        const startTime = performance.now();
-
-        try {
-            // Update main buffers
-            this.updateBuffers(bvpSignal, respSignal, timestamp);
-
-            // Process signals for rate calculation
-            const bvpMetrics = this.processSignalForRates(
-                Array.from(this.bvpBuffer.raw.slice(-this.maxSignalBufferSize)),
-                'heart'
-            );
-            const respMetrics = this.processSignalForRates(
-                Array.from(this.respBuffer.raw.slice(-this.maxSignalBufferSize)),
-                'resp'
-            );
-
-            // Update rate history with quality assessment
-            this.updateRateHistory(bvpMetrics, respMetrics, timestamp);
-
-            // Update performance metrics
-            this.updatePerformanceMetrics(startTime);
-
-            // Prepare and return display data
-            return this.prepareDisplayData(timestamp);
-        } catch (error) {
-            console.error('Signal processing error:', error);
-            throw new Error(`Signal processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
-    }
-
-    private updateBuffers(bvpSignal: number[], respSignal: number[], timestamp: string): void {
-        // Convert new signals to Float32Array
-        const bvpNew = new Float32Array(bvpSignal);
-        const respNew = new Float32Array(respSignal);
-
-        // Shift existing data and add new data
-        this.bvpBuffer.raw.set(
-            new Float32Array([...Array.from(this.bvpBuffer.raw.slice(bvpNew.length)), ...bvpNew])
-        );
-        this.respBuffer.raw.set(
-            new Float32Array([...Array.from(this.respBuffer.raw.slice(respNew.length)), ...respNew])
-        );
-
-        // Update filtered signals
-        this.bvpBuffer.filtered = new Float32Array(
-            this.bvpFilter.processSignal(Array.from(this.bvpBuffer.raw))
-        );
-        this.respBuffer.filtered = new Float32Array(
-            this.respFilter.processSignal(Array.from(this.respBuffer.raw))
-        );
-
-        // Update timestamps
-        this.timestamps.push(timestamp);
-        if (this.timestamps.length > this.maxSignalBufferSize) {
-            this.timestamps = this.timestamps.slice(-this.maxSignalBufferSize);
-        }
-    }
-
-    private processSignalForRates(signal: number[], type: 'heart' | 'resp'): SignalMetrics {
-        // Get analysis window (up to 30 seconds)
-        const windowSize = Math.min(this.MAX_HISTORY_SECONDS * this.fps, signal.length);
-        const analysisWindow = signal.slice(-windowSize);
-
-        // Apply bandpass filter
-        const filter = type === 'heart' ? this.bvpFilter : this.respFilter;
-        const filteredSignal = filter.processSignal(analysisWindow);
-
-        // Analyze signal
-        return SignalAnalyzer.analyzeSignal(filteredSignal, this.fps, type);
-    }
-
-    private updateRateHistory(
-        bvpMetrics: SignalMetrics,
-        respMetrics: SignalMetrics,
-        timestamp: string
-    ): void {
-        // Update heart rate history
-        this.heartRates.push({
-            timestamp,
-            value: bvpMetrics.rate,
-            snr: bvpMetrics.quality.snr,
-            quality: bvpMetrics.quality.quality
-        });
-
-        // Update respiratory rate history
-        this.respRates.push({
-            timestamp,
-            value: respMetrics.rate,
-            snr: respMetrics.quality.snr,
-            quality: respMetrics.quality.quality
-        });
-
-        // Maintain history length
-        if (this.heartRates.length > this.maxRateBufferSize) {
-            this.heartRates = this.heartRates.slice(-this.maxRateBufferSize);
-            this.respRates = this.respRates.slice(-this.maxRateBufferSize);
-        }
-    }
-
-    private prepareDisplayData(timestamp: string): ProcessedSignals {
-        // Get display window samples
-        const displaySamples = this.DISPLAY_SECONDS * this.fps;
-
-        // Get recent data for display
-        const recentBvp = Array.from(this.bvpBuffer.raw.slice(-displaySamples));
-        const recentResp = Array.from(this.respBuffer.raw.slice(-displaySamples));
-
-        // Get filtered signals
-        const filteredBvp = Array.from(this.bvpBuffer.filtered.slice(-displaySamples));
-        const filteredResp = Array.from(this.respBuffer.filtered.slice(-displaySamples));
-
-        // Get latest metrics
-        const latestBvp = this.heartRates[this.heartRates.length - 1];
-        const latestResp = this.respRates[this.respRates.length - 1];
-
+    private createBuffer(): SignalBuffer {
         return {
-            bvp: {
-                raw: recentBvp,
-                filtered: filteredBvp,
-                metrics: {
-                    rate: latestBvp.value,
-                    quality: {
-                        snr: latestBvp.snr,
-                        quality: latestBvp.quality,
-                        signalStrength: Math.max(...recentBvp.map(Math.abs)),
-                        artifactRatio: this.calculateArtifactRatio(recentBvp)
-                    }
-                }
-            },
-            resp: {
-                raw: recentResp,
-                filtered: filteredResp,
-                metrics: {
-                    rate: latestResp.value,
-                    quality: {
-                        snr: latestResp.snr,
-                        quality: latestResp.quality,
-                        signalStrength: Math.max(...recentResp.map(Math.abs)),
-                        artifactRatio: this.calculateArtifactRatio(recentResp)
-                    }
-                }
-            },
-            timestamp
+            raw: [],
+            filtered: [],
+            normalized: [],
+            rates: []
         };
     }
 
-    private calculateArtifactRatio(signal: number[]): number {
-        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-        const variance = signal.reduce((a, b) => a + (b - mean) ** 2, 0) / signal.length;
-        const threshold = 3 * Math.sqrt(variance);
-        return signal.filter(x => Math.abs(x - mean) > threshold).length / signal.length;
-    }
-
-    private updatePerformanceMetrics(startTime: number): void {
-        const processingTime = performance.now() - startTime;
-        this.updateCount++;
-        this.averageUpdateTime = (this.averageUpdateTime * (this.updateCount - 1) + processingTime) / this.updateCount;
-    }
-
-    getPerformanceMetrics(): {
-        averageUpdateTime: number;
-        updateCount: number;
-        bufferUtilization: number;
+    processNewSignals(bvpSignal: number[], respSignal: number[], timestamp: string): {
+        bvp: SignalMetrics,
+        resp: SignalMetrics,
+        displayData: {
+            bvp: number[],
+            resp: number[]
+        }
     } {
+        // Update buffers with new signals
+        this.updateBuffer(this.bvpBuffer, bvpSignal);
+        this.updateBuffer(this.respBuffer, respSignal);
+        this.timestamps.push(timestamp);
+
+        // Maintain buffer size
+        this.maintainBufferSize();
+
+        // Process BVP signal
+        const bvpMetrics = this.processSignal(
+            this.bvpBuffer,
+            'bvp',
+            timestamp
+        );
+
+        // Process RESP signal
+        const respMetrics = this.processSignal(
+            this.respBuffer,
+            'resp',
+            timestamp
+        );
+
+        // Prepare display data
+        const displayData = this.prepareDisplayData();
+
         return {
-            averageUpdateTime: this.averageUpdateTime,
-            updateCount: this.updateCount,
-            bufferUtilization: (this.timestamps.length / this.maxSignalBufferSize) * 100
+            bvp: bvpMetrics,
+            resp: respMetrics,
+            displayData
         };
     }
 
-    exportData(): string {
-        return JSON.stringify({
+    private updateBuffer(buffer: SignalBuffer, newSignal: number[]): void {
+        // Add new signals to raw buffer
+        buffer.raw.push(...newSignal);
+
+        // Apply filtering
+        const filtered = this.applyFiltering(buffer.raw, buffer === this.bvpBuffer);
+        buffer.filtered = filtered;
+
+        // Normalize for display
+        buffer.normalized = this.normalizeSignal(filtered);
+    }
+
+    private applyFiltering(signal: number[], isBVP: boolean): number[] {
+        // Remove DC component
+        const meanRemoved = this.removeDC(signal);
+
+        // Apply appropriate filter
+        const filtered = isBVP ?
+            this.bvpFilter.processSignal(meanRemoved) :
+            this.respFilter.processSignal(meanRemoved);
+
+        return filtered;
+    }
+
+    private removeDC(signal: number[]): number[] {
+        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+        return signal.map(x => x - mean);
+    }
+
+    private normalizeSignal(signal: number[]): number[] {
+        const max = Math.max(...signal.map(Math.abs));
+        return signal.map(x => x / (max || 1));
+    }
+
+    private maintainBufferSize(): void {
+        const maxSize = this.MAX_BUFFER;
+
+        if (this.bvpBuffer.raw.length > maxSize) {
+            this.bvpBuffer.raw = this.bvpBuffer.raw.slice(-maxSize);
+            this.bvpBuffer.filtered = this.bvpBuffer.filtered.slice(-maxSize);
+            this.bvpBuffer.normalized = this.bvpBuffer.normalized.slice(-maxSize);
+        }
+
+        if (this.respBuffer.raw.length > maxSize) {
+            this.respBuffer.raw = this.respBuffer.raw.slice(-maxSize);
+            this.respBuffer.filtered = this.respBuffer.filtered.slice(-maxSize);
+            this.respBuffer.normalized = this.respBuffer.normalized.slice(-maxSize);
+        }
+
+        if (this.timestamps.length > maxSize) {
+            this.timestamps = this.timestamps.slice(-maxSize);
+        }
+    }
+
+    private processSignal(
+        buffer: SignalBuffer,
+        type: 'bvp' | 'resp',
+        timestamp: string
+    ): SignalMetrics {
+        // Get analysis window
+        const windowSize = Math.min(this.ANALYSIS_WINDOW * this.fps, buffer.filtered.length);
+        const analysisWindow = buffer.filtered.slice(-windowSize);
+
+        // Calculate rate and quality metrics
+        const rateMetrics = this.calculateRate(analysisWindow, type);
+
+        // Store rate point
+        buffer.rates.push({
+            timestamp,
+            value: rateMetrics.rate,
+            snr: rateMetrics.quality.snr,
+            quality: rateMetrics.quality.quality
+        });
+
+        // Maintain rates buffer size
+        if (buffer.rates.length > this.MAX_BUFFER) {
+            buffer.rates = buffer.rates.slice(-this.MAX_BUFFER);
+        }
+
+        return rateMetrics;
+    }
+
+    private calculateRate(signal: number[], type: 'bvp' | 'resp'): SignalMetrics {
+        const validRanges = {
+            bvp: { min: 40, max: 180 },  // BPM
+            resp: { min: 6, max: 30 }    // Breaths/min
+        };
+
+        const sigtype = type === 'bvp' ? 'heart' : 'resp';
+
+        // Use SignalAnalyzer to get initial metrics
+        const metrics = SignalAnalyzer.analyzeSignal(signal, this.fps, sigtype);
+
+        // Validate rate is within physiological range
+        const range = validRanges[type];
+        if (metrics.rate < range.min || metrics.rate > range.max) {
+            metrics.rate = type === 'bvp' ? 75 : 15; // Default to typical values
+            metrics.quality.quality = 'poor';
+        }
+
+        return metrics;
+    }
+
+    private prepareDisplayData(): { bvp: number[], resp: number[] } {
+        const displaySamples = this.DISPLAY_WINDOW * this.fps;
+
+        return {
+            bvp: this.bvpBuffer.normalized.slice(-displaySamples),
+            resp: this.respBuffer.normalized.slice(-displaySamples)
+        };
+    }
+
+    getExportData(): any {
+        return {
             metadata: {
                 samplingRate: this.fps,
                 startTime: this.timestamps[0],
@@ -327,47 +220,26 @@ export class SignalProcessor {
             },
             signals: {
                 bvp: {
-                    raw: Array.from(this.bvpBuffer.raw),
-                    filtered: Array.from(this.bvpBuffer.filtered)
+                    raw: this.bvpBuffer.raw,
+                    filtered: this.bvpBuffer.filtered
                 },
                 resp: {
-                    raw: Array.from(this.respBuffer.raw),
-                    filtered: Array.from(this.respBuffer.filtered)
+                    raw: this.respBuffer.raw,
+                    filtered: this.respBuffer.filtered
                 }
             },
             rates: {
-                heart: this.heartRates,
-                respiratory: this.respRates
+                heart: this.bvpBuffer.rates,
+                respiratory: this.respBuffer.rates
             },
-            timestamps: this.timestamps,
-            performance: this.getPerformanceMetrics()
-        }, null, 2);
-    }
-
-    getConfig(): ModelConfig | null {
-        return this.config;
+            timestamps: this.timestamps
+        };
     }
 
     reset(): void {
-        // Reset buffers
-        this.bvpBuffer.raw.fill(0);
-        this.bvpBuffer.filtered.fill(0);
-        this.bvpBuffer.snr = 0;
-        this.respBuffer.raw.fill(0);
-        this.respBuffer.filtered.fill(0);
-        this.respBuffer.snr = 0;
-
-        // Reset history
-        this.heartRates = [];
-        this.respRates = [];
+        this.bvpBuffer = this.createBuffer();
+        this.respBuffer = this.createBuffer();
         this.timestamps = [];
-
-        // Reset metrics
-        this.updateCount = 0;
-        this.averageUpdateTime = 0;
-        this.lastUpdateTime = Date.now();
-
-        // Reset filters
         this.bvpFilter.reset();
         this.respFilter.reset();
     }

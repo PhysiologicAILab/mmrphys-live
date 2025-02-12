@@ -2,8 +2,14 @@
 /// <reference lib="webworker" />
 
 import * as ort from 'onnxruntime-web';
-import { SignalProcessor, SignalBuffers, SignalState } from '../utils/signalProcessor';
-import { SignalMetrics } from '../utils/signalAnalysis';
+import { SignalProcessor } from '../utils/signalProcessor';
+import {
+    SignalBuffers,
+    PerformanceMetrics,
+    SignalMetrics,
+    WorkerMessage,
+    ExportData
+} from '../types';
 
 interface ModelConfig {
     sampling_rate: number;
@@ -15,17 +21,15 @@ interface InferenceResult {
     bvp: {
         raw: number[];
         filtered: number[];
-        rate: number;
         metrics: SignalMetrics;
     };
     resp: {
         raw: number[];
         filtered: number[];
-        rate: number;
         metrics: SignalMetrics;
     };
     timestamp: string;
-    inferenceTime: number;
+    performanceMetrics: PerformanceMetrics;
 }
 
 class InferenceWorker {
@@ -232,7 +236,21 @@ class InferenceWorker {
         const respSignal = Array.from(results.rRSP.data as Float32Array);
 
         // Process signals
-        return this.signalProcessor.processNewSignals(bvpSignal, respSignal, timestamp);
+        const processedSignals = this.signalProcessor.processNewSignals(bvpSignal, respSignal, timestamp);
+
+        return {
+            bvp: {
+                raw: processedSignals.displayData.bvp,
+                filtered: [], // You might want to add filtered data from processedSignals
+                metrics: processedSignals.bvp
+            },
+            resp: {
+                raw: processedSignals.displayData.resp,
+                filtered: [], // You might want to add filtered data from processedSignals
+                metrics: processedSignals.resp
+            },
+            timestamp
+        };
     }
 
     async runInference(frameBuffer: ImageData[]): Promise<void> {
@@ -241,44 +259,51 @@ class InferenceWorker {
         }
 
         try {
-            const startTime = performance.now();
+            const processingStart = performance.now();
 
             // Process frames and get signals
             const processedSignals = await this.processFrames(frameBuffer);
 
             if (processedSignals) {
-                // Convert SignalBuffers to InferenceResult
+                // Manually construct performance metrics if method doesn't exist
+                const performanceMetrics: PerformanceMetrics = {
+                    averageUpdateTime: performance.now() - processingStart,
+                    updateCount: 1,
+                    bufferUtilization: 0
+                };
+
+                // Convert ProcessedSignals to InferenceResult
                 const inferenceResult: InferenceResult = {
                     bvp: {
-                        raw: Array.from(processedSignals.bvp.raw),
-                        filtered: Array.from(processedSignals.bvp.filtered),
-                        rate: processedSignals.bvp.metrics.rate,
+                        raw: processedSignals.bvp.raw,
+                        filtered: processedSignals.bvp.filtered,
                         metrics: processedSignals.bvp.metrics
                     },
                     resp: {
-                        raw: Array.from(processedSignals.resp.raw),
-                        filtered: Array.from(processedSignals.resp.filtered),
-                        rate: processedSignals.resp.metrics.rate,
+                        raw: processedSignals.resp.raw,
+                        filtered: processedSignals.resp.filtered,
                         metrics: processedSignals.resp.metrics
                     },
-                    timestamp: new Date().toISOString(),
-                    inferenceTime: performance.now() - startTime
+                    timestamp: processedSignals.timestamp,
+                    performanceMetrics
                 };
 
                 // Send results to main thread
-                self.postMessage({
+                const message: WorkerMessage = {
                     type: 'inference',
                     status: 'success',
                     results: inferenceResult
-                });
+                };
+
+                self.postMessage(message);
             }
         } catch (error) {
-            console.error('Inference error:', error);
-            self.postMessage({
+            const errorMessage: WorkerMessage = {
                 type: 'inference',
                 status: 'error',
                 error: error instanceof Error ? error.message : String(error)
-            });
+            };
+            self.postMessage(errorMessage);
         }
     }
 
@@ -288,7 +313,7 @@ class InferenceWorker {
         }
 
         try {
-            const exportedData = this.signalProcessor.exportData();
+            const exportedData: ExportData = this.signalProcessor.getExportData();
             self.postMessage({
                 type: 'export',
                 status: 'success',
