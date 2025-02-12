@@ -54,6 +54,7 @@ function wasmContentTypePlugin(): Plugin {
 }
 
 export default defineConfig({
+    base: '/mmrphys.github.io/',
     plugins: [
         react(),
         copyOrtWasmFiles(),

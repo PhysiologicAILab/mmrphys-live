@@ -13,7 +13,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "test": "vitest"
+    "test": "vitest",
+    "deploy": "sh deploy.sh"
   },
   "dependencies": {
     "chart.js": "^4.3.0",
