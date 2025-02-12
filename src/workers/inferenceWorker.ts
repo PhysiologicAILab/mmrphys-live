@@ -2,9 +2,8 @@
 /// <reference lib="webworker" />
 
 import * as ort from 'onnxruntime-web';
-import { SignalAnalyzer } from '../utils/signalAnalysis';
-import { SignalFilters, FilteredSignal } from '../utils/signalFilters';
-import { SignalProcessor, SignalBuffers } from '../utils/signalProcessor';
+import { SignalProcessor, SignalBuffers, SignalState } from '../utils/signalProcessor';
+import { SignalMetrics } from '../utils/signalAnalysis';
 
 interface ModelConfig {
     sampling_rate: number;
@@ -16,14 +15,14 @@ interface InferenceResult {
     bvp: {
         raw: number[];
         filtered: number[];
-        snr: number;
         rate: number;
+        metrics: SignalMetrics;
     };
     resp: {
         raw: number[];
         filtered: number[];
-        snr: number;
         rate: number;
+        metrics: SignalMetrics;
     };
     timestamp: string;
     inferenceTime: number;
@@ -91,7 +90,15 @@ class InferenceWorker {
         console.log('Loading model configuration...');
         const configResponse = await fetch('/models/rphys/config.json');
         if (!configResponse.ok) throw new Error('Failed to fetch model config');
-        this.modelConfig = await configResponse.json();
+
+        const config = await configResponse.json();
+
+        // Validate config structure
+        if (!this.isValidModelConfig(config)) {
+            throw new Error('Invalid model configuration format');
+        }
+
+        this.modelConfig = config;
 
         // Update FPS if specified in config
         if (this.modelConfig.sampling_rate) {
@@ -99,6 +106,17 @@ class InferenceWorker {
         }
 
         console.log('Model configuration loaded:', this.modelConfig);
+    }
+
+    // Type guard for ModelConfig
+    private isValidModelConfig(config: any): config is ModelConfig {
+        return (
+            typeof config === 'object' &&
+            config !== null &&
+            typeof config.sampling_rate === 'number' &&
+            Array.isArray(config.input_size) &&
+            Array.isArray(config.output_names)
+        );
     }
 
     private async createSession(): Promise<void> {
@@ -229,14 +247,29 @@ class InferenceWorker {
             const processedSignals = await this.processFrames(frameBuffer);
 
             if (processedSignals) {
+                // Convert SignalBuffers to InferenceResult
+                const inferenceResult: InferenceResult = {
+                    bvp: {
+                        raw: Array.from(processedSignals.bvp.raw),
+                        filtered: Array.from(processedSignals.bvp.filtered),
+                        rate: processedSignals.bvp.metrics.rate,
+                        metrics: processedSignals.bvp.metrics
+                    },
+                    resp: {
+                        raw: Array.from(processedSignals.resp.raw),
+                        filtered: Array.from(processedSignals.resp.filtered),
+                        rate: processedSignals.resp.metrics.rate,
+                        metrics: processedSignals.resp.metrics
+                    },
+                    timestamp: new Date().toISOString(),
+                    inferenceTime: performance.now() - startTime
+                };
+
                 // Send results to main thread
                 self.postMessage({
                     type: 'inference',
                     status: 'success',
-                    results: {
-                        ...processedSignals,
-                        inferenceTime: performance.now() - startTime
-                    }
+                    results: inferenceResult
                 });
             }
         } catch (error) {
@@ -338,25 +371,25 @@ self.onmessage = async (e: MessageEvent) => {
     }
 };
 
-// Error handling
-self.onerror = (error) => {
-    console.error('Worker error:', error);
+// Error handling with proper type checking
+self.addEventListener('error', (event: ErrorEvent) => {
+    console.error('Worker error:', event);
     self.postMessage({
         type: 'error',
         status: 'error',
-        error: error.message
+        error: event.message || 'Unknown error occurred'
     });
-};
+});
 
-// Unhandled rejection handling
-self.onunhandledrejection = (event) => {
+// Unhandled rejection handling with proper type checking
+self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
     console.error('Unhandled rejection in worker:', event.reason);
     self.postMessage({
         type: 'error',
         status: 'error',
-        error: 'Unhandled rejection in worker: ' + event.reason
+        error: event.reason instanceof Error ? event.reason.message : String(event.reason)
     });
-};
+});
 
 // Export empty object to satisfy TypeScript module requirements
 export { };
