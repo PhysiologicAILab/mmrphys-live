@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class OnnxConverter:
-    def __init__(self, model_path, onnx_path, config_path, num_frames=180,
+    def __init__(self, model_path, onnx_path, config_path, num_frames=181,
                  num_channels=3, height=9, width=9):
         self.model_path = Path(model_path)
         self.onnx_path = Path(onnx_path)
@@ -131,7 +131,7 @@ class OnnxConverter:
                 dummy_input,
                 self.onnx_path,
                 export_params=True,
-                opset_version=11,
+                opset_version=14,
                 do_constant_folding=True,
                 input_names=['input'],
                 output_names=['rPPG', 'rRSP'],
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--onnx_path', type=str, required=True)
     parser.add_argument('--config_path', type=str, required=True)
-    parser.add_argument('--num_frames', type=int, default=180)
+    parser.add_argument('--num_frames', type=int, default=181)
     parser.add_argument('--num_channels', type=int, default=3)
     parser.add_argument('--height', type=int, default=9)
     parser.add_argument('--width', type=int, default=9)

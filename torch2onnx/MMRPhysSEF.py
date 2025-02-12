@@ -168,11 +168,9 @@ class MMRPhysSEF(nn.Module):
 
     def forward(self, x): # [batch, Features=3, Temp=frames, Width=9, Height=9]
 
-        # [batch, length, channel, width, height] = x.shape
+        # [batch, channel, length, width, height] = x.shape
 
-        # For ONNX, the input shape is: # [batch, length, channel, width, height]
-        # perform diff outside the model
-        # x = x[:, :, 1:, :, :] - x[:, :, :-1, :, :]
+        x = x[:, :, 1:, :, :] - x[:, :, :-1, :, :]
         # x = torch.diff(x, dim=2)    # Removes any aperiod variations, and also removes spatial facial features - which are not required to learn by the model
 
         x = self.rgb_norm(x)
@@ -188,12 +186,12 @@ class MMRPhysSEF(nn.Module):
             rsp_voxel_embeddings = None
 
         if "BVP" in self.tasks:
-            rPPG = self.rppg_head(self.num_frames, bvp_embeddings=bvp_voxel_embeddings)
+            rPPG = self.rppg_head(self.num_frames-1, bvp_embeddings=bvp_voxel_embeddings)
         else:
             rPPG = None
 
         if "RSP" in self.tasks:
-            rBr = self.rBr_head(self.num_frames, rsp_embeddings=rsp_voxel_embeddings)
+            rBr = self.rBr_head(self.num_frames-1, rsp_embeddings=rsp_voxel_embeddings)
         else:
             rBr = None
 

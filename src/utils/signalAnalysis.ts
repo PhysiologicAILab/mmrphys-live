@@ -4,11 +4,12 @@ export interface SignalQuality {
     snr: number;           // Signal-to-noise ratio
     signalStrength: number;// Overall signal strength
     artifactRatio: number; // Ratio of artifacts detected
+    quality: 'excellent' | 'good' | 'moderate' | 'poor';
 }
 
-export interface FrequencyRange {
-    minFreq: number;
-    maxFreq: number;
+export interface SignalMetrics {
+    rate: number;
+    quality: SignalQuality;
 }
 
 export class SignalAnalyzer {
@@ -23,24 +24,39 @@ export class SignalAnalyzer {
         }
     };
 
+    private static readonly RATE_RANGES = {
+        heart: {
+            min: 40,
+            max: 180
+        },
+        resp: {
+            min: 6,
+            max: 30
+        }
+    };
+
     /**
-     * Calculate vital signs using FFT analysis
-     * @param signal Input signal array
-     * @param samplingRate Sampling rate in Hz
-     * @param type Type of vital sign ('heart' or 'resp')
-     * @returns Calculated rate in BPM or breaths per minute
+     * Analyze physiological signal and return comprehensive metrics
      */
-    public static calculateRate(signal: number[], samplingRate: number, type: 'heart' | 'resp'): number {
+    public static analyzeSignal(
+        signal: number[],
+        samplingRate: number,
+        type: 'heart' | 'resp'
+    ): SignalMetrics {
         // Validate input
         if (!signal?.length || signal.length < samplingRate) {
             throw new Error('Invalid signal input');
         }
 
-        // Check signal quality
+        // Assess signal quality
         const quality = this.assessSignalQuality(signal);
+
+        // If signal quality is too poor, return default values
         if (quality.signalStrength < 0.01 || quality.artifactRatio > 0.1) {
-            console.warn(`Poor ${type} signal quality detected`);
-            return type === 'heart' ? 75 : 15; // Return physiological defaults
+            return {
+                rate: type === 'heart' ? 75 : 15, // Physiological defaults
+                quality
+            };
         }
 
         // Process signal
@@ -49,20 +65,55 @@ export class SignalAnalyzer {
         const fftResult = this.computeFFT(windowed);
         const { minFreq, maxFreq } = this.FREQ_RANGES[type];
 
-        // Find dominant frequency
+        // Calculate rate
         const rate = this.findDominantFrequency(fftResult, samplingRate, minFreq, maxFreq);
 
-        // Validate result
-        const validRange = type === 'heart'
-            ? { min: 40, max: 180 }   // Heart rate range
-            : { min: 6, max: 30 };    // Respiratory rate range
+        // Validate rate
+        const validRange = this.RATE_RANGES[type];
+        const validatedRate = this.validateRate(rate, type);
 
-        if (rate < validRange.min || rate > validRange.max) {
+        return {
+            rate: validatedRate,
+            quality
+        };
+    }
+
+    private static validateRate(rate: number, type: 'heart' | 'resp'): number {
+        const range = this.RATE_RANGES[type];
+        if (rate < range.min || rate > range.max) {
             console.warn(`${type} rate outside physiological range:`, rate);
             return type === 'heart' ? 75 : 15;
         }
-
         return rate;
+    }
+
+    private static assessSignalQuality(signal: number[]): SignalQuality {
+        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+        const variance = signal.reduce((a, b) => a + (b - mean) ** 2, 0) / signal.length;
+        const maxAmp = Math.max(...signal.map(Math.abs));
+
+        const snr = 10 * Math.log10(variance / (maxAmp * 0.1));
+        const signalStrength = maxAmp;
+        const artifactRatio = signal.filter(x => Math.abs(x) > 3 * variance).length / signal.length;
+
+        // Determine quality level
+        let quality: 'excellent' | 'good' | 'moderate' | 'poor';
+        if (snr >= 10 && artifactRatio < 0.05) {
+            quality = 'excellent';
+        } else if (snr >= 5 && artifactRatio < 0.1) {
+            quality = 'good';
+        } else if (snr >= 0 && artifactRatio < 0.2) {
+            quality = 'moderate';
+        } else {
+            quality = 'poor';
+        }
+
+        return {
+            snr,
+            signalStrength,
+            artifactRatio,
+            quality
+        };
     }
 
     private static removeDC(signal: number[]): number[] {
@@ -173,7 +224,7 @@ export class SignalAnalyzer {
         // Interpolate peak for better frequency resolution
         const interpolatedFreq = this.interpolatePeak(powerSpectrum, peakIdx, samplingRate);
 
-        // Convert to BPM
+        // Convert to BPM/breaths per minute
         return interpolatedFreq * 60;
     }
 
@@ -196,19 +247,7 @@ export class SignalAnalyzer {
         return (interpolatedIdx * samplingRate) / spectrum.length;
     }
 
-    private static assessSignalQuality(signal: number[]): SignalQuality {
-        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-        const variance = signal.reduce((a, b) => a + (b - mean) ** 2, 0) / signal.length;
-        const maxAmp = Math.max(...signal.map(Math.abs));
-
-        return {
-            snr: 10 * Math.log10(variance / (maxAmp * 0.1)),
-            signalStrength: maxAmp,
-            artifactRatio: signal.filter(x => Math.abs(x) > 3 * variance).length / signal.length
-        };
-    }
-
-    // Optional: Bandpass filter implementation
+    // Public bandpass filter method for preprocessing
     public static bandpassFilter(
         signal: number[],
         samplingRate: number,

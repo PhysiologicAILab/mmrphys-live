@@ -1,5 +1,3 @@
-// src/components/VitalSignsChart/VitalSignsChart.tsx
-
 import React, { useMemo } from 'react';
 import {
     Chart as ChartJS,
@@ -14,6 +12,7 @@ import {
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 
+// Register ChartJS components
 ChartJS.register(
     CategoryScale,
     LinearScale,
@@ -35,13 +34,14 @@ interface VitalSignsChartProps {
 }
 
 const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
-    title,
-    data,
-    rate,
-    snr,
-    type,
+    title = '',
+    data = [],
+    rate = 0,
+    snr = 0,
+    type = 'bvp',
     isReady = false
 }) => {
+    // Chart options with proper type safety
     const chartOptions = useMemo(() => ({
         responsive: true,
         maintainAspectRatio: false,
@@ -57,7 +57,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     text: 'Time (seconds)'
                 },
                 min: 0,
-                max: 6, // 6 seconds window
+                max: 6,
                 ticks: {
                     stepSize: 1
                 }
@@ -81,7 +81,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 mode: 'index' as const,
                 intersect: false,
                 callbacks: {
-                    label: (context: any) => {
+                    label: (context: { parsed: { y: number } }) => {
                         const value = context.parsed.y;
                         return `${type === 'bvp' ? 'BVP' : 'Resp'}: ${value.toFixed(3)}`;
                     }
@@ -90,20 +90,21 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
             title: {
                 display: true,
                 text: [
-                    `${title}`,
-                    `${rate.toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
-                    `SNR: ${snr.toFixed(1)} dB`
+                    title,
+                    `${Number(rate).toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
+                    `SNR: ${Number(snr).toFixed(1)} dB`
                 ]
             }
         }
     }), [title, rate, snr, type]);
 
+    // Chart data with safety checks
     const chartData = useMemo(() => ({
-        labels: data.map((_, i) => (i / 30).toFixed(1)),
+        labels: Array.isArray(data) ? data.map((_, i) => (i / 30).toFixed(1)) : [],
         datasets: [
             {
                 label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
-                data: data,
+                data: Array.isArray(data) ? data : [],
                 borderColor: type === 'bvp' ? 'rgb(75, 192, 192)' : 'rgb(255, 99, 132)',
                 backgroundColor: type === 'bvp'
                     ? 'rgba(75, 192, 192, 0.2)'
@@ -117,7 +118,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         ]
     }), [data, type]);
 
-    if (!isReady || data.length === 0) {
+    // Loading/empty state
+    if (!isReady || !Array.isArray(data) || data.length === 0) {
         return (
             <div className="vital-signs-chart not-ready">
                 <div className="chart-placeholder">
@@ -129,6 +131,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     }
 
     const getSignalQualityClass = (snrValue: number): string => {
+        if (!isFinite(snrValue)) return 'poor';
         if (snrValue >= 10) return 'excellent';
         if (snrValue >= 5) return 'good';
         if (snrValue >= 0) return 'moderate';
@@ -136,6 +139,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     };
 
     const getRateClass = (currentRate: number): string => {
+        if (!isFinite(currentRate)) return 'normal';
         if (type === 'bvp') {
             if (currentRate < 60) return 'low';
             if (currentRate > 100) return 'high';
@@ -159,7 +163,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
             <div className="metrics-container mt-4 grid grid-cols-2 gap-4">
                 <div className={`rate-metric p-2 rounded ${getRateClass(rate)}`}>
                     <div className="text-lg font-bold">
-                        {rate.toFixed(1)} {type === 'bvp' ? 'BPM' : 'Breaths/min'}
+                        {Number(rate).toFixed(1)} {type === 'bvp' ? 'BPM' : 'Breaths/min'}
                     </div>
                     <div className="text-sm opacity-75">
                         {type === 'bvp' ? 'Heart Rate' : 'Respiratory Rate'}
@@ -167,7 +171,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 </div>
                 <div className={`snr-metric p-2 rounded ${getSignalQualityClass(snr)}`}>
                     <div className="text-lg font-bold">
-                        {snr.toFixed(1)} dB
+                        {Number(snr).toFixed(1)} dB
                     </div>
                     <div className="text-sm opacity-75">
                         Signal Quality
