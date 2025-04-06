@@ -3,6 +3,8 @@
 
 import * as ort from 'onnxruntime-web';
 import { SignalProcessor } from '../utils/signalProcessor';
+// import { configService, ModelConfig } from '../services/configService';
+
 import {
     SignalBuffers,
     PerformanceMetrics,
@@ -50,9 +52,34 @@ class InferenceWorker {
 
             // Load model configuration and create session
             await this.loadModelConfig();
+
+
+            // // Load model configuration using ConfigService
+            // console.log('Loading model configuration via ConfigService...');
+            // this.modelConfig = await configService.getConfig();
+
+            // if (!this.modelConfig) {
+            //     throw new Error('Failed to load model configuration from ConfigService');
+            // }
+
+            // console.log('Model configuration loaded:', this.modelConfig);
+
+            // // Update parameters from config
+            // if (this.modelConfig.FRAME_NUM) {
+            //     const minFramesRequired = this.modelConfig.FRAME_NUM;
+            //     console.log(`Using frame sequence length: ${minFramesRequired}`);
+            //     console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
+            // }
+
+            // if (this.modelConfig.sampling_rate) {
+            //     this.fps = this.modelConfig.sampling_rate;
+            //     console.log(`Using sampling rate: ${this.fps} FPS`);
+            // }
+
+            // Create session using config values
             await this.createSession();
 
-            // Initialize signal processor with detected FPS
+            // Initialize signal processor with config parameters
             this.signalProcessor = new SignalProcessor(this.fps);
 
             // Warm up model and processor
@@ -203,7 +230,7 @@ class InferenceWorker {
                         const tensorIdx = c * (this.MIN_FRAMES_REQUIRED * 9 * 9) +
                             f * (9 * 9) +
                             h * 9 + w;
-                        const frame = frames[f];
+                            const frame = frames[f];
                         const pixelIdx = (h * 9 + w) * 4;
                         data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
                     }
@@ -241,12 +268,12 @@ class InferenceWorker {
         return {
             bvp: {
                 raw: processedSignals.displayData.bvp,
-                filtered: [], // You might want to add filtered data from processedSignals
+                filtered: processedSignals.displayData.filteredBvp || [], // Add filtered BVP data
                 metrics: processedSignals.bvp
             },
             resp: {
                 raw: processedSignals.displayData.resp,
-                filtered: [], // You might want to add filtered data from processedSignals
+                filtered: processedSignals.displayData.filteredResp || [], // Add filtered resp data
                 metrics: processedSignals.resp
             },
             timestamp
