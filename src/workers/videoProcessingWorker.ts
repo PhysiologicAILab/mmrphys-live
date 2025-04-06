@@ -17,6 +17,8 @@ interface ProcessMessage {
         width: number;
         height: number;
     } | null;
+    targetWidth?: number;
+    targetHeight?: number;
 }
 
 type WorkerMessage = InitMessage | ProcessMessage;
@@ -39,61 +41,78 @@ type WorkerResponse = InitResponse | ProcessResponse;
 declare const self: DedicatedWorkerGlobalScope;
 
 // Process video frame to 9x9 resolution
-function processVideoFrame(imageData: ImageData, faceBox?: {
+async function processVideoFrame(imageData: ImageData, faceBox?: {
     x: number;
     y: number;
     width: number;
     height: number;
-} | null): ImageData {
+} | null, targetWidth: number = 9, targetHeight: number = 9): Promise<ImageData> {
     // Create an offscreen canvas for processing
-    const canvas = new OffscreenCanvas(9, 9);
+    const canvas = new OffscreenCanvas(targetWidth, targetHeight);
     const ctx = canvas.getContext('2d');
 
     if (!ctx) {
         throw new Error('Failed to get 2D rendering context');
     }
 
-    // Process frame to 9x9 for rPhys
-    if (faceBox && faceBox.width > 0 && faceBox.height > 0) {
-        // Use face box for cropping
-        ctx.drawImage(
-            createImageBitmap(imageData, {
-                sx: faceBox.x,
-                sy: faceBox.y,
-                sw: faceBox.width,
-                sh: faceBox.height
-            }),
-            0,
-            0,
-            9,
-            9
-        );
-    } else {
-        // Use center crop
-        const size = Math.min(imageData.width, imageData.height);
-        const x = Math.floor((imageData.width - size) / 2);
-        const y = Math.floor((imageData.height - size) / 2);
+    try {
+        // Process frame to target resolution
+        if (faceBox && faceBox.width > 0 && faceBox.height > 0) {
+            // Use face box for cropping - await the bitmap creation
+            const bitmap = await createImageBitmap(imageData,
+                faceBox.x,
+                faceBox.y,
+                faceBox.width,
+                faceBox.height
+            );
 
-        ctx.drawImage(
-            createImageBitmap(imageData, {
-                sx: x,
-                sy: y,
-                sw: size,
-                sh: size
-            }),
-            0,
-            0,
-            9,
-            9
-        );
+            ctx.drawImage(
+                bitmap,
+                0,
+                0,
+                targetWidth,
+                targetHeight
+            );
+
+            // Clean up bitmap after use
+            bitmap.close();
+        } else {
+            // Use center crop
+            const size = Math.min(imageData.width, imageData.height);
+            const x = Math.floor((imageData.width - size) / 2);
+            const y = Math.floor((imageData.height - size) / 2);
+
+            // Create and await the bitmap
+            const bitmap = await createImageBitmap(imageData,
+                x,
+                y,
+                size,
+                size
+            );
+
+            ctx.drawImage(
+                bitmap,
+                0,
+                0,
+                targetWidth,
+                targetHeight
+            );
+
+            // Clean up bitmap after use
+            bitmap.close();
+        }
+
+        // Return processed image data
+        return ctx.getImageData(0, 0, targetWidth, targetHeight);
+    } catch (error) {
+        console.error('Error processing frame:', error);
+        // Return a blank image on error
+        return new ImageData(targetWidth, targetHeight);
     }
-
-    // Return processed image data
-    return ctx.getImageData(0, 0, 9, 9);
 }
 
 // Message event handler
-self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
+self.onmessage = async (e: MessageEvent) => {
     try {
         switch (e.data.type) {
             case 'init':
@@ -111,18 +130,32 @@ self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
                     throw new Error('Worker not initialized');
                 }
 
-                // Process the video frame
-                const processedData = await processVideoFrame(
-                    e.data.imageData,
-                    e.data.faceBox
-                );
+                // Get target dimensions from message if provided
+                const targetWidth = e.data.targetWidth || 9;
+                const targetHeight = e.data.targetHeight || 9;
 
-                // Send processed data back to main thread
-                self.postMessage({
-                    type: 'process',
-                    status: 'success',
-                    processedData
-                }, [processedData.data.buffer]);
+                try {
+                    // Process the video frame and await the result
+                    const processedData = await processVideoFrame(
+                        e.data.imageData,
+                        e.data.faceBox,
+                        targetWidth,
+                        targetHeight
+                    );
+
+                    // Send processed data back to main thread
+                    self.postMessage({
+                        type: 'process',
+                        status: 'success',
+                        processedData
+                    }, [processedData.data.buffer]);
+                } catch (processError) {
+                    self.postMessage({
+                        type: 'process',
+                        status: 'error',
+                        error: processError instanceof Error ? processError.message : 'Frame processing failed'
+                    });
+                }
                 break;
 
             default:

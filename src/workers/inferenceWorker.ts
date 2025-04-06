@@ -3,7 +3,7 @@
 
 import * as ort from 'onnxruntime-web';
 import { SignalProcessor } from '../utils/signalProcessor';
-// import { configService, ModelConfig } from '../services/configService';
+import { configService, ModelConfig } from '../services/configService';
 
 import {
     SignalBuffers,
@@ -13,11 +13,6 @@ import {
     ExportData
 } from '../types';
 
-interface ModelConfig {
-    sampling_rate: number;
-    input_size: number[];
-    output_names: string[];
-}
 
 interface InferenceResult {
     bvp: {
@@ -54,27 +49,27 @@ class InferenceWorker {
             await this.loadModelConfig();
 
 
-            // // Load model configuration using ConfigService
-            // console.log('Loading model configuration via ConfigService...');
-            // this.modelConfig = await configService.getConfig();
+            // Load model configuration using ConfigService
+            console.log('Loading model configuration via ConfigService...');
+            this.modelConfig = await configService.getConfig();
 
-            // if (!this.modelConfig) {
-            //     throw new Error('Failed to load model configuration from ConfigService');
-            // }
+            if (!this.modelConfig) {
+                throw new Error('Failed to load model configuration from ConfigService');
+            }
 
-            // console.log('Model configuration loaded:', this.modelConfig);
+            console.log('Model configuration loaded:', this.modelConfig);
 
-            // // Update parameters from config
-            // if (this.modelConfig.FRAME_NUM) {
-            //     const minFramesRequired = this.modelConfig.FRAME_NUM;
-            //     console.log(`Using frame sequence length: ${minFramesRequired}`);
-            //     console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
-            // }
+            // Update parameters from config
+            if (this.modelConfig.FRAME_NUM) {
+                const minFramesRequired = this.modelConfig.FRAME_NUM;
+                console.log(`Using frame sequence length: ${minFramesRequired}`);
+                console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
+            }
 
-            // if (this.modelConfig.sampling_rate) {
-            //     this.fps = this.modelConfig.sampling_rate;
-            //     console.log(`Using sampling rate: ${this.fps} FPS`);
-            // }
+            if (this.modelConfig.sampling_rate) {
+                this.fps = this.modelConfig.sampling_rate;
+                console.log(`Using sampling rate: ${this.fps} FPS`);
+            }
 
             // Create session using config values
             await this.createSession();
@@ -117,6 +112,7 @@ class InferenceWorker {
         }
     }
 
+    // In the loadModelConfig method
     private async loadModelConfig(): Promise<void> {
         console.log('Loading model configuration...');
         const configResponse = await fetch('/models/rphys/config.json');
@@ -131,9 +127,16 @@ class InferenceWorker {
 
         this.modelConfig = config;
 
+        // Update frame sequence length if specified in config
+        if (this.modelConfig.FRAME_NUM) {
+            const minFramesRequired = this.modelConfig.FRAME_NUM;
+            console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
+        }
+
         // Update FPS if specified in config
         if (this.modelConfig.sampling_rate) {
             this.fps = this.modelConfig.sampling_rate;
+            console.log(`Using sampling rate: ${this.fps} FPS`);
         }
 
         console.log('Model configuration loaded:', this.modelConfig);
@@ -151,9 +154,15 @@ class InferenceWorker {
     }
 
     private async createSession(): Promise<void> {
-        console.log('Loading ONNX model...');
-        const modelResponse = await fetch('/models/rphys/SCAMPS_Multi_9x9.onnx');
-        if (!modelResponse.ok) throw new Error('Failed to fetch model');
+        if (!this.modelConfig || !this.modelConfig.model_path) {
+            throw new Error('Model path not specified in config');
+        }
+
+        const modelPath = this.modelConfig.model_path;
+        console.log(`Loading ONNX model from: ${modelPath}`);
+
+        const modelResponse = await fetch(modelPath);
+        if (!modelResponse.ok) throw new Error(`Failed to fetch model: ${modelResponse.statusText}`);
 
         const modelArrayBuffer = await modelResponse.arrayBuffer();
         const modelData = new Uint8Array(modelArrayBuffer);
@@ -216,22 +225,25 @@ class InferenceWorker {
 
         // Get the last 181 frames
         const frames = frameBuffer.slice(-this.MIN_FRAMES_REQUIRED);
+        // Get dimensions from first frame (all frames should have same dimensions)
+        const frameHeight = frames[0].height;
+        const frameWidth = frames[0].width;
 
-        // Create tensor with shape [1, 3, 181, 9, 9]
-        const shape = [1, 3, this.MIN_FRAMES_REQUIRED, 9, 9];
+        // Create tensor with shape [1, 3, 181, frameHeight, frameWidth]
+        const shape = [1, 3, this.MIN_FRAMES_REQUIRED, frameHeight, frameWidth];
         const data = new Float32Array(shape.reduce((a, b) => a * b));
 
         // Fill tensor with normalized frame data
         // Loop order matches tensor memory layout: CHW format
         for (let c = 0; c < 3; c++) {
             for (let f = 0; f < this.MIN_FRAMES_REQUIRED; f++) {
-                for (let h = 0; h < 9; h++) {
-                    for (let w = 0; w < 9; w++) {
-                        const tensorIdx = c * (this.MIN_FRAMES_REQUIRED * 9 * 9) +
-                            f * (9 * 9) +
-                            h * 9 + w;
-                            const frame = frames[f];
-                        const pixelIdx = (h * 9 + w) * 4;
+                for (let h = 0; h < frameHeight; h++) {
+                    for (let w = 0; w < frameWidth; w++) {
+                        const tensorIdx = c * (this.MIN_FRAMES_REQUIRED * frameHeight * frameWidth) +
+                            f * (frameHeight * frameWidth) +
+                            h * frameWidth + w;
+                        const frame = frames[f];
+                        const pixelIdx = (h * frameWidth + w) * 4;
                         data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
                     }
                 }

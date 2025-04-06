@@ -22,6 +22,7 @@
         "version": "1.0",
         "description": "Remote physiological signal extraction model"
     },
+    "model_path": "models/rphys/SCAMPS_Multi_72x72.onnx",
     "signal_parameters": {
         "bvp": {
             "min_rate": 40,

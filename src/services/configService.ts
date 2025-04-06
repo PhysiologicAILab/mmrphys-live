@@ -51,6 +51,44 @@ class ConfigService {
         return this.configPromise;
     }
 
+    public async getModelPath(): Promise<string> {
+        const config = await this.getConfig();
+        // Use a default path if not specified in config
+        return config.model_path || '/models/rphys/SCAMPS_Multi_9x9.onnx';
+    }
+
+    public async getFrameWidth(): Promise<number> {
+        const config = await this.getConfig();
+
+        // Check if input_size exists and has the expected structure
+        if (config.input_size && Array.isArray(config.input_size) && config.input_size.length >= 5) {
+            // Width is the last dimension in [B,C,T,H,W]
+            return config.input_size[4];
+        }
+
+        // Return default if not found
+        return 9;
+    }
+
+    public async getFrameHeight(): Promise<number> {
+        const config = await this.getConfig();
+
+        // Check if input_size exists and has the expected structure
+        if (config.input_size && Array.isArray(config.input_size) && config.input_size.length >= 5) {
+            // Height is the 2nd last dimension in [B,C,T,H,W]
+            return config.input_size[3];
+        }
+
+        // Return default if not found
+        return 9;
+    }
+
+    public async getSequenceLength(): Promise<number> {
+        const config = await this.getConfig();
+        return config.FRAME_NUM || 181; // Default to 181 frames if not specified
+    }
+
+
     private async loadConfig(): Promise<ModelConfig> {
         try {
             const response = await fetch('/models/rphys/config.json');
@@ -68,27 +106,6 @@ class ConfigService {
             console.error('Error loading config:', error);
             throw error;
         }
-    }
-    
-    // Utility functions for accessing common config properties
-    public async getModelPath(): Promise<string> {
-        const config = await this.getConfig();
-        return config.model_path;
-    }
-    
-    public async getFrameWidth(): Promise<number> {
-        const config = await this.getConfig();
-        return config.input_size[4]; // Width is the last dimension in [B,C,T,H,W]
-    }
-    
-    public async getFrameHeight(): Promise<number> {
-        const config = await this.getConfig();
-        return config.input_size[3]; // Height is the 2nd last dimension
-    }
-    
-    public async getSequenceLength(): Promise<number> {
-        const config = await this.getConfig();
-        return config.FRAME_NUM;
     }
 }
 

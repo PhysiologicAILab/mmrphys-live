@@ -21,6 +21,7 @@ export interface ModelConfig {
         version: string;
         description: string;
     };
+    model_path: string;
     signal_parameters: {
         bvp: {
             min_rate: number;
@@ -124,6 +125,12 @@ export class VitalSignsModel {
 
             // Load config and model
             await this.loadConfig();
+
+            // Use model path from config
+            if (!this.config || !this.config.model_path) {
+                throw new Error('Model path not specified in config');
+            }
+
             await this.initializeSession();
 
             this.isInitialized = true;
@@ -195,7 +202,11 @@ export class VitalSignsModel {
     private async initializeSession(): Promise<void> {
         try {
             console.log('Loading ONNX model...');
-            const modelResponse = await fetch('/models/rphys/SCAMPS_Multi_9x9.onnx', {
+
+            const modelPath = this.config?.model_path || 'models/rphys/SCAMPS_Multi_9x9.onnx';
+            console.log(`Loading model from: ${modelPath}`);
+
+            const modelResponse = await fetch(modelPath, {
                 cache: 'force-cache',
                 credentials: 'same-origin'
             });
@@ -262,10 +273,14 @@ export class VitalSignsModel {
             throw new Error('Insufficient frames for inference');
         }
 
+        if (!this.config || !this.config.input_size) {
+            throw new Error('Configuration or input size not available');
+        }
+
         const batchSize = 1;
         const sequenceLength = frameBuffer.length;
-        const height = 9;
-        const width = 9;
+        const height = this.config.input_size[3] || 9; // Get from config
+        const width = this.config.input_size[4] || 9;  // Get from config
         const channels = 3;
 
         const inputTensor = new Float32Array(
@@ -278,6 +293,11 @@ export class VitalSignsModel {
                     throw new Error(`Invalid frame at index ${frameIdx}`);
                 }
 
+                // Verify dimensions match what we expect
+                if (frame.width !== width || frame.height !== height) {
+                    console.warn(`Frame dimensions (${frame.width}x${frame.height}) don't match expected (${width}x${height})`);
+                }
+
                 for (let c = 0; c < channels; c++) {
                     for (let h = 0; h < height; h++) {
                         for (let w = 0; w < width; w++) {
@@ -287,7 +307,13 @@ export class VitalSignsModel {
                                 c * (height * width) +
                                 h * width +
                                 w;
-                            inputTensor[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
+
+                            // Safe access with bound checking
+                            if (pixelIdx + c < frame.data.length) {
+                                inputTensor[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
+                            } else {
+                                inputTensor[tensorIdx] = 0;
+                            }
                         }
                     }
                 }

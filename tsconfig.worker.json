@@ -27,7 +27,8 @@
     "include": [
         "src/workers/**/*",
         "src/utils/**/*",
-        "src/types/**/*"
+        "src/types/**/*",
+        "src/services/**/*"
     ],
     "exclude": [
         "node_modules"
