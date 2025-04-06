@@ -6,14 +6,14 @@ export class VideoProcessor {
     private readonly videoElement: HTMLVideoElement;
     private readonly croppedCanvas: HTMLCanvasElement;
     private readonly croppedCtx: CanvasRenderingContext2D;
-    private readonly processingCanvas: HTMLCanvasElement;
+    private processingCanvas: HTMLCanvasElement;
     private processingCtx: CanvasRenderingContext2D;
     private displayCanvas: HTMLCanvasElement | null = null;
     private displayCtx: CanvasRenderingContext2D | null = null;
     private frameWidth: number = 9;  // Default, will be updated from config
     private frameHeight: number = 9; // Default, will be updated from config
     private frameBuffer: ImageData[] = [];
-    private readonly MIN_FRAMES_REQUIRED = 181; // 6 seconds at 30 FPS +1 frame for Diff
+    private MIN_FRAMES_REQUIRED = 181; // Will be updated from config if available
     private readonly MAX_BUFFER_SIZE = 301;     // 10 seconds at 30 FPS +1 frame for Diff
     private mediaStream: MediaStream | null = null;
     private lastFrameTime: number = 0;
@@ -27,6 +27,7 @@ export class VideoProcessor {
     private currentFaceBox: FaceBox | null = null;
     private lastFaceDetectionTime: number = 0;
     private readonly faceDetectionInterval: number = 1000; // 1 second interval
+    private configLoaded: boolean = false;
 
     constructor() {
         // Initialize video element
@@ -59,8 +60,6 @@ export class VideoProcessor {
 
         this.croppedCtx = croppedCtx;
         this.processingCtx = processCtx;
-        this.processingCanvas.width = this.processingCanvas.width;
-        this.processingCanvas.height = this.processingCanvas.height;
 
         // Initialize face detector
         this.faceDetector = new FaceDetector();
@@ -68,7 +67,6 @@ export class VideoProcessor {
         // Configure context settings
         this.setupContexts();
     }
-
 
     private async initializeFaceDetector(): Promise<void> {
         try {
@@ -137,21 +135,31 @@ export class VideoProcessor {
             // Get frame dimensions from config
             this.frameWidth = await configService.getFrameWidth();
             this.frameHeight = await configService.getFrameHeight();
+            this.MIN_FRAMES_REQUIRED = await configService.getSequenceLength();
 
-            console.log(`Using frame dimensions: ${this.frameWidth}x${this.frameHeight}`);
+            console.log(`[VideoProcessor] Using frame dimensions: ${this.frameWidth}x${this.frameHeight}`);
+            console.log(`[VideoProcessor] Using sequence length: ${this.MIN_FRAMES_REQUIRED}`);
+
+            // Create a new processing canvas with the correct dimensions from config
             const newProcessingCanvas = this.createOptimizedCanvas(this.frameWidth, this.frameHeight);
-            const processCtx = this.processingCanvas.getContext('2d', {
+            const newCtx = newProcessingCanvas.getContext('2d', {
                 willReadFrequently: true,
                 alpha: false,
                 desynchronized: true
             });
 
-            if (!processCtx) {
+            if (!newCtx) {
                 throw new Error('Failed to get processing canvas context');
             }
 
-            this.processingCtx = processCtx;
+            // Update processing canvas and context with the new ones
+            this.processingCanvas = newProcessingCanvas;
+            this.processingCtx = newCtx;
+
+            // Reset the context settings
             this.setupContexts();
+
+            this.configLoaded = true;
         } catch (error) {
             console.error('Failed to load config settings:', error);
             throw error;
@@ -209,6 +217,11 @@ export class VideoProcessor {
 
     private captureAndProcessFrame(): void {
         try {
+            if (!this.configLoaded) {
+                console.warn('Attempting to process frame before config is loaded');
+                return;
+            }
+
             const cropRegion = this.getCropRegion();
 
             // Draw cropped region to 256x256 canvas for display
@@ -224,7 +237,7 @@ export class VideoProcessor {
                 256
             );
 
-            // Process to dynamic resolution from config
+            // Draw to processing canvas with dimensions from config
             this.processingCtx.drawImage(
                 this.croppedCanvas,
                 0,
@@ -234,7 +247,12 @@ export class VideoProcessor {
             );
 
             // Get processed frame data
-            const frameData = this.processingCtx.getImageData(0, 0, this.frameWidth, this.frameHeight);
+            const frameData = this.processingCtx.getImageData(
+                0,
+                0,
+                this.frameWidth,
+                this.frameHeight
+            );
 
             // Update frame buffer
             this.updateFrameBuffer(frameData);

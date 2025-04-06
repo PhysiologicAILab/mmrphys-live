@@ -34,9 +34,12 @@ class InferenceWorker {
     private signalProcessor: SignalProcessor | null = null;
     private isInitialized = false;
     private inputName: string = '';
-    private readonly MIN_FRAMES_REQUIRED = 181; // 6 seconds at 30 FPS +1 frame for Diff
+    private MIN_FRAMES_REQUIRED = 181; // Will be updated from config
     private fps: number = 30;
     private modelConfig: ModelConfig | null = null;
+    private frameHeight: number = 9;  // Will be updated from config
+    private frameWidth: number = 9;   // Will be updated from config
+    private sequenceLength: number = 181; // Will be updated from config
 
     async initialize(): Promise<void> {
         if (this.isInitialized) return;
@@ -45,30 +48,29 @@ class InferenceWorker {
             // Configure environment
             await this.configureOrtEnvironment();
 
-            // Load model configuration and create session
-            await this.loadModelConfig();
-
-
             // Load model configuration using ConfigService
-            console.log('Loading model configuration via ConfigService...');
+            console.log('[InferenceWorker] Loading model configuration via ConfigService...');
             this.modelConfig = await configService.getConfig();
 
             if (!this.modelConfig) {
                 throw new Error('Failed to load model configuration from ConfigService');
             }
 
-            console.log('Model configuration loaded:', this.modelConfig);
+            console.log('[InferenceWorker] Model configuration loaded:', this.modelConfig);
 
-            // Update parameters from config
-            if (this.modelConfig.FRAME_NUM) {
-                const minFramesRequired = this.modelConfig.FRAME_NUM;
-                console.log(`Using frame sequence length: ${minFramesRequired}`);
-                console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
-            }
+            // Get dimensions from config
+            this.frameWidth = await configService.getFrameWidth();
+            this.frameHeight = await configService.getFrameHeight();
+            this.sequenceLength = await configService.getSequenceLength();
+            this.MIN_FRAMES_REQUIRED = this.sequenceLength;
 
+            console.log(`[InferenceWorker] Using dimensions: ${this.frameWidth}x${this.frameHeight}`);
+            console.log(`[InferenceWorker] Using sequence length: ${this.sequenceLength}`);
+
+            // Update sampling rate from config
             if (this.modelConfig.sampling_rate) {
                 this.fps = this.modelConfig.sampling_rate;
-                console.log(`Using sampling rate: ${this.fps} FPS`);
+                console.log(`[InferenceWorker] Using sampling rate: ${this.fps} FPS`);
             }
 
             // Create session using config values
@@ -84,7 +86,7 @@ class InferenceWorker {
             self.postMessage({ type: 'init', status: 'success' });
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('Initialization error:', errorMessage);
+            console.error('[InferenceWorker] Initialization error:', errorMessage);
             self.postMessage({
                 type: 'init',
                 status: 'error',
@@ -105,52 +107,11 @@ class InferenceWorker {
             ort.env.wasm.numThreads = 1;
             ort.env.wasm.simd = true;
 
-            console.log('ONNX Runtime environment configured');
+            console.log('[InferenceWorker] ONNX Runtime environment configured');
         } catch (error) {
-            console.error('Failed to configure ONNX Runtime:', error);
+            console.error('[InferenceWorker] Failed to configure ONNX Runtime:', error);
             throw error;
         }
-    }
-
-    // In the loadModelConfig method
-    private async loadModelConfig(): Promise<void> {
-        console.log('Loading model configuration...');
-        const configResponse = await fetch('/models/rphys/config.json');
-        if (!configResponse.ok) throw new Error('Failed to fetch model config');
-
-        const config = await configResponse.json();
-
-        // Validate config structure
-        if (!this.isValidModelConfig(config)) {
-            throw new Error('Invalid model configuration format');
-        }
-
-        this.modelConfig = config;
-
-        // Update frame sequence length if specified in config
-        if (this.modelConfig.FRAME_NUM) {
-            const minFramesRequired = this.modelConfig.FRAME_NUM;
-            console.log(`Using frame sequence length: ${this.MIN_FRAMES_REQUIRED}`);
-        }
-
-        // Update FPS if specified in config
-        if (this.modelConfig.sampling_rate) {
-            this.fps = this.modelConfig.sampling_rate;
-            console.log(`Using sampling rate: ${this.fps} FPS`);
-        }
-
-        console.log('Model configuration loaded:', this.modelConfig);
-    }
-
-    // Type guard for ModelConfig
-    private isValidModelConfig(config: any): config is ModelConfig {
-        return (
-            typeof config === 'object' &&
-            config !== null &&
-            typeof config.sampling_rate === 'number' &&
-            Array.isArray(config.input_size) &&
-            Array.isArray(config.output_names)
-        );
     }
 
     private async createSession(): Promise<void> {
@@ -159,14 +120,14 @@ class InferenceWorker {
         }
 
         const modelPath = this.modelConfig.model_path;
-        console.log(`Loading ONNX model from: ${modelPath}`);
+        console.log(`[InferenceWorker] Loading ONNX model from: ${modelPath}`);
 
         const modelResponse = await fetch(modelPath);
         if (!modelResponse.ok) throw new Error(`Failed to fetch model: ${modelResponse.statusText}`);
 
         const modelArrayBuffer = await modelResponse.arrayBuffer();
         const modelData = new Uint8Array(modelArrayBuffer);
-        console.log('Model loaded, size:', modelData.byteLength);
+        console.log('[InferenceWorker] Model loaded, size:', modelData.byteLength);
 
         this.session = await ort.InferenceSession.create(modelData, {
             executionProviders: ['wasm'],
@@ -185,20 +146,23 @@ class InferenceWorker {
         }
 
         this.inputName = this.session.inputNames[0];
-        console.log('Session created successfully');
-        console.log('Input names:', this.session.inputNames);
-        console.log('Output names:', this.session.outputNames);
+        console.log('[InferenceWorker] Session created successfully');
+        console.log('[InferenceWorker] Input names:', this.session.inputNames);
+        console.log('[InferenceWorker] Output names:', this.session.outputNames);
     }
 
     private async warmup(): Promise<void> {
         if (!this.session || !this.signalProcessor) return;
 
         try {
-            console.log('Starting model warmup...');
+            console.log('[InferenceWorker] Starting model warmup...');
 
-            // Create dummy input data
+            // Create dummy input data with the dimensions from config
             const dummyFrames = Array(this.MIN_FRAMES_REQUIRED).fill(null).map(() => {
-                const imageData = new ImageData(9, 9);
+                const imageData = new ImageData(
+                    this.frameWidth,
+                    this.frameHeight
+                );
                 for (let i = 0; i < imageData.data.length; i += 4) {
                     const value = Math.floor(Math.random() * 255);
                     imageData.data[i] = value;     // R
@@ -211,9 +175,9 @@ class InferenceWorker {
 
             // Run warmup inference
             await this.processFrames(dummyFrames);
-            console.log('Warmup completed successfully');
+            console.log('[InferenceWorker] Warmup completed successfully');
         } catch (error) {
-            console.error('Model warmup error:', error);
+            console.error('[InferenceWorker] Model warmup error:', error);
             throw error;
         }
     }
@@ -223,27 +187,32 @@ class InferenceWorker {
             throw new Error(`Insufficient frames. Need ${this.MIN_FRAMES_REQUIRED}, got ${frameBuffer.length}`);
         }
 
-        // Get the last 181 frames
+        // Get the last N frames as configured
         const frames = frameBuffer.slice(-this.MIN_FRAMES_REQUIRED);
-        // Get dimensions from first frame (all frames should have same dimensions)
-        const frameHeight = frames[0].height;
-        const frameWidth = frames[0].width;
 
-        // Create tensor with shape [1, 3, 181, frameHeight, frameWidth]
-        const shape = [1, 3, this.MIN_FRAMES_REQUIRED, frameHeight, frameWidth];
+        // Check input dimensions and log warnings
+        const firstFrame = frames[0];
+        if (firstFrame.width !== this.frameWidth || firstFrame.height !== this.frameHeight) {
+            console.warn(`[InferenceWorker] Input frame dimensions mismatch: got ${firstFrame.width}x${firstFrame.height}, expected ${this.frameWidth}x${this.frameHeight}`);
+            throw new Error(`Frame dimensions mismatch: got ${firstFrame.width}x${firstFrame.height}, expected ${this.frameWidth}x${this.frameHeight}`);
+        }
+
+        // Create tensor with shape [1, 3, sequence_length, height, width] - order from config
+        const shape = [1, 3, this.sequenceLength, this.frameHeight, this.frameWidth];
         const data = new Float32Array(shape.reduce((a, b) => a * b));
 
-        // Fill tensor with normalized frame data
-        // Loop order matches tensor memory layout: CHW format
-        for (let c = 0; c < 3; c++) {
-            for (let f = 0; f < this.MIN_FRAMES_REQUIRED; f++) {
-                for (let h = 0; h < frameHeight; h++) {
-                    for (let w = 0; w < frameWidth; w++) {
-                        const tensorIdx = c * (this.MIN_FRAMES_REQUIRED * frameHeight * frameWidth) +
-                            f * (frameHeight * frameWidth) +
-                            h * frameWidth + w;
-                        const frame = frames[f];
-                        const pixelIdx = (h * frameWidth + w) * 4;
+        // Process each frame - careful to match the exact tensor layout expected by the model
+        for (let f = 0; f < frames.length; f++) {
+            const frame = frames[f];
+
+            // Fill tensor with normalized frame data in CHW format
+            for (let c = 0; c < 3; c++) {
+                for (let h = 0; h < this.frameHeight; h++) {
+                    for (let w = 0; w < this.frameWidth; w++) {
+                        const tensorIdx = c * (this.sequenceLength * this.frameHeight * this.frameWidth) +
+                            f * (this.frameHeight * this.frameWidth) +
+                            h * this.frameWidth + w;
+                        const pixelIdx = (h * this.frameWidth + w) * 4;
                         data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
                     }
                 }
