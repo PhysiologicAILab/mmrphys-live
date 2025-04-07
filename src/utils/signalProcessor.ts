@@ -20,10 +20,11 @@ interface RatePoint {
 
 export class SignalProcessor {
     private readonly fps: number;
-    private readonly DISPLAY_WINDOW = 6; // 6 seconds for display
-    private readonly ANALYSIS_WINDOW = 10; // 10 seconds for analysis
-    private readonly RESP_ANALYSIS_WINDOW = 30; // 30 seconds for respiratory analysis
-    private readonly MAX_BUFFER = 300; // Maximum buffer size
+    private readonly DISPLAY_WINDOW = 15; // Increased to 15 seconds
+    private readonly ANALYSIS_WINDOW = 10; // Analysis window for rate calculation
+    private readonly RESP_ANALYSIS_WINDOW = 30; // Respiratory analysis window
+    private readonly MAX_BUFFER = 450; // Increased buffer size (15 seconds * 30 fps)
+    private readonly RATE_SMOOTHING_WINDOW = 7; // Increased rate smoothing window
 
     // Signal buffers
     private bvpBuffer: SignalBuffer;
@@ -326,55 +327,75 @@ export class SignalProcessor {
             };
         }
 
-        // Calculate metrics using improved spectral analysis
         try {
-            // Calculate spectrum using windowed FFT for better frequency resolution
+            // Apply Hanning window for better spectral estimation
             const windowedSignal = this.applyHanningWindow(analysisWindow);
+            
+            // Calculate spectrum using windowed FFT
             const spectrum = this.calculateSpectrum(windowedSignal, this.fps);
-
-            // Find dominant frequency with improved peak detection
-            const freqRange = type === 'bvp'
+            
+            // Find dominant frequency in physiological range
+            const freqRange = type === 'bvp' 
                 ? { min: 0.75, max: 3.0 }  // 45-180 BPM
                 : { min: 0.1, max: 0.5 };  // 6-30 breaths/min
-
+            
             const dominantFreq = this.findDominantFrequency(spectrum, freqRange);
-
-            // Convert frequency to rate
-            let rate = dominantFreq * 60; // Convert Hz to BPM or breaths/min
-
-            // Apply temporal smoothing with improved logic
-            if (rate > 0) {
-                const rateHistory = type === 'bvp' ? this.bvpRateHistory : this.respRateHistory;
+            
+            // Convert frequency to rate (BPM or breaths/min)
+            let rate = dominantFreq * 60;
+            
+            // Apply temporal smoothing with rate history
+            const rateHistory = type === 'bvp' ? this.bvpRateHistory : this.respRateHistory;
+            
+            if (isFinite(rate) && rate > 0) {
+                // Add to history if it's a valid rate
                 rateHistory.push(rate);
-
-                // Keep last 5 valid measurements for better smoothing
-                while (rateHistory.length > 5) {
+                
+                // Keep reasonable history size
+                if (rateHistory.length > this.RATE_SMOOTHING_WINDOW) {
                     rateHistory.shift();
                 }
-
-                // Calculate smoothed rate using weighted median for robustness
-                if (rateHistory.length > 1) {
-                    // Sort rates for median calculation
+                
+                // Use median filtering for stability if we have enough history
+                if (rateHistory.length >= 3) {
                     const sortedRates = [...rateHistory].sort((a, b) => a - b);
-                    const medianRate = sortedRates[Math.floor(sortedRates.length / 2)];
-
-                    // Limit rate change to physiologically plausible values
-                    const maxChange = type === 'bvp' ? 5 : 2; // Reduced max change for stability
-                    const prevRate = rate;
-                    rate = prevRate + Math.min(Math.max(medianRate - prevRate, -maxChange), maxChange);
+                    rate = sortedRates[Math.floor(sortedRates.length / 2)];
                 }
+            } else if (rateHistory.length > 0) {
+                // Use previous rate if current calculation is invalid
+                rate = rateHistory[rateHistory.length - 1];
             }
-
+            
             // Ensure rate is within physiological range
             if (type === 'bvp') {
                 rate = Math.max(45, Math.min(180, rate));
             } else {
                 rate = Math.max(6, Math.min(30, rate));
             }
-
-            // Calculate enhanced signal quality metrics
+            
+            // Store rate in buffer
+            buffer.rates.push({
+                timestamp,
+                value: rate,
+                snr: 0, // Will be updated below
+                quality: 'poor' // Will be updated below
+            });
+            
+            // Trim buffer if needed
+            if (buffer.rates.length > this.MAX_BUFFER) {
+                buffer.rates = buffer.rates.slice(-this.MAX_BUFFER);
+            }
+            
+            // Calculate signal quality
             const quality = this.calculateSignalQuality(spectrum, dominantFreq, freqRange, type);
-
+            
+            // Update the last rate entry with quality metrics
+            if (buffer.rates.length > 0) {
+                const lastIdx = buffer.rates.length - 1;
+                buffer.rates[lastIdx].snr = quality.snr;
+                buffer.rates[lastIdx].quality = quality.quality;
+            }
+            
             return { rate, quality };
         } catch (error) {
             console.error(`Error calculating ${type} metrics:`, error);
@@ -566,20 +587,12 @@ export class SignalProcessor {
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
         const displaySamples = this.DISPLAY_WINDOW * this.fps;
 
-        // Get the most recent data
-        const rawBvp = this.bvpBuffer.raw.slice(-displaySamples);
-        const rawResp = this.respBuffer.raw.slice(-displaySamples);
-
-        // Get the filtered data
-        const filteredBvp = this.bvpBuffer.normalized.slice(-displaySamples);
-        const filteredResp = this.respBuffer.normalized.slice(-displaySamples);
-
-        // Enhance signal characteristics for visualization
+        // Use raw data for historical context but filtered for display
         return {
-            bvp: this.normalizeForDisplay(rawBvp),
-            resp: this.normalizeForDisplay(rawResp),
-            filteredBvp: filteredBvp,
-            filteredResp: filteredResp
+            bvp: this.bvpBuffer.raw.slice(-displaySamples),
+            resp: this.respBuffer.raw.slice(-displaySamples),
+            filteredBvp: this.bvpBuffer.normalized.slice(-displaySamples),
+            filteredResp: this.respBuffer.normalized.slice(-displaySamples)
         };
     }
 

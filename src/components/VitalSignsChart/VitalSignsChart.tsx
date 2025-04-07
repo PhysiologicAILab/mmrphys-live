@@ -65,9 +65,9 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     text: 'Time (seconds)'
                 },
                 min: 0,
-                max: 6,
+                max: 15, // Increased to 15 seconds
                 ticks: {
-                    stepSize: 1
+                    stepSize: 3 // Show ticks every 3 seconds
                 }
             },
             y: {
@@ -107,23 +107,18 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         }
     }), [title, rate, snr, type]);
 
-    // Chart data with safety checks - only show filtered data
+    // Chart data with safety checks - use filtered data for better visualization
     const chartData = useMemo(() => ({
-        labels: Array.isArray(data) ? data.map((_, i) => (i / 30).toFixed(1)) : [],
+        labels: Array.isArray(filteredData || data) ? (filteredData || data).map((_, i) => (i / 30).toFixed(1)) : [],
         datasets: [
-            // Only include the filtered dataset
             {
-                label: type === 'bvp' ? 'Filtered Blood Volume Pulse' : 'Filtered Respiratory Signal',
-                data: filteredData || data, // Use filteredData if available, otherwise fall back to data
+                label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
+                data: filteredData || data, // Prioritize filtered data for display
                 borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
-                backgroundColor: type === 'bvp'
-                    ? 'rgba(0, 105, 105, 0.2)'
-                    : 'rgba(220, 53, 69, 0.2)',
-                fill: true,
-                tension: 0.4,
-                borderWidth: 2,
-                pointRadius: 0,
-                pointHoverRadius: 4
+                borderWidth: 1.5,
+                tension: 0.3,
+                fill: false,
+                pointRadius: 0
             }
         ]
     }), [data, filteredData, type]);
