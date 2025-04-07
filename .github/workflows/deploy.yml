@@ -15,22 +15,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: 'npm'
+          cache-dependency-path: package-lock.json
       
       - name: Install dependencies
-        run: npm install
-      
-      - name: Build
-        run: npm run build
+        run: |
+          npm ci
+          npm install onnxruntime-web@1.17.0
       
       - name: Setup Pages
-        uses: actions/configure-pages@v3
+        uses: actions/configure-pages@v4
+      
+      - name: Build
+        run: |
+          npm run build
+          npx tsc --project tsconfig.build.json
+      
+      - name: Verify Build Output
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "Build directory not found"
+            exit 1
+          fi
+          if [ ! -f "dist/index.html" ]; then
+            echo "index.html not found in build directory"
+            exit 1
+          fi
+          if [ ! -d "dist/ort" ]; then
+            echo "ONNX Runtime files not found in build directory"
+            exit 1
+          fi
+          ls -la dist/ort  # List ONNX Runtime files for verification
+          echo "Build verification complete"
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -46,4 +68,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v3
+        uses: actions/deploy-pages@v4

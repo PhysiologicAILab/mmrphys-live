@@ -10,19 +10,44 @@ export class ButterworthFilter {
     private readonly a: number[];
     private readonly order: number;
     private z: number[];  // delay line for filtering
+    private prevInput: number[] = [];  // store previous inputs for median filtering
+    private readonly MEDIAN_WINDOW_SIZE = 5;  // size of median filter window
 
     constructor(coefficients: FilterCoefficients) {
         this.b = coefficients.b;
         this.a = coefficients.a;
         this.order = this.b.length - 1;
         this.z = new Array(this.order).fill(0);
+        this.prevInput = new Array(this.MEDIAN_WINDOW_SIZE).fill(0);
     }
 
     /**
-     * Apply filter to a single sample
+     * Apply pre-filtering to reduce sudden spikes (median filter)
+     */
+    private prefilterSample(sample: number): number {
+        // Add current sample to window
+        this.prevInput.push(sample);
+        // Remove oldest sample
+        if (this.prevInput.length > this.MEDIAN_WINDOW_SIZE) {
+            this.prevInput.shift();
+        }
+
+        // Get median value
+        const sorted = [...this.prevInput].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+
+        return median;
+    }
+
+    /**
+     * Apply filter to a single sample with spike rejection
      */
     processSample(sample: number): number {
-        let output = this.b[0] * sample;
+        // Apply median prefiltering to reduce spikes
+        const filteredSample = this.prefilterSample(sample);
+
+        // Apply Butterworth filter
+        let output = this.b[0] * filteredSample;
 
         // Apply feedforward and feedback
         for (let i = 1; i <= this.order; i++) {
@@ -32,11 +57,21 @@ export class ButterworthFilter {
             output -= this.a[i] * this.z[i - 1];
         }
 
+        // Outlier detection - limit extreme changes
+        const maxChange = 0.5; // Maximum allowed change in signal
+        if (this.z.length > 0) {
+            const lastOutput = this.z[0];
+            if (Math.abs(output - lastOutput) > maxChange) {
+                // Limit the change
+                output = lastOutput + Math.sign(output - lastOutput) * maxChange;
+            }
+        }
+
         // Update delay line
         for (let i = this.order - 1; i > 0; i--) {
             this.z[i] = this.z[i - 1];
         }
-        this.z[0] = sample;
+        this.z[0] = filteredSample;
 
         return output;
     }
@@ -45,7 +80,12 @@ export class ButterworthFilter {
      * Process an entire signal
      */
     processSignal(signal: number[]): number[] {
-        return signal.map(sample => this.processSample(sample));
+        // Apply DC removal first
+        const mean = signal.reduce((sum, val) => sum + val, 0) / signal.length;
+        const centered = signal.map(sample => sample - mean);
+
+        // Apply bandpass filter
+        return centered.map(sample => this.processSample(sample));
     }
 
     /**
@@ -53,12 +93,14 @@ export class ButterworthFilter {
      */
     reset(): void {
         this.z.fill(0);
+        this.prevInput.fill(0);
     }
 
     /**
-     * Design Butterworth bandpass filter
+     * Design Butterworth bandpass filter with improved parameters
      */
-    static designBandpass(lowFreq: number, highFreq: number, samplingRate: number, order: number = 2): FilterCoefficients {
+    static designBandpass(lowFreq: number, highFreq: number, samplingRate: number, order: number = 4): FilterCoefficients {
+        // Increase order to 4 for sharper cutoff
         // Normalize frequencies
         const nyquist = samplingRate / 2;
         const wLow = Math.tan((Math.PI * lowFreq) / nyquist);
@@ -82,7 +124,7 @@ export class ButterworthFilter {
         const poles: number[] = [];
         const zeros: number[] = [];
 
-        // Compute poles for Butterworth prototype
+        // Compute poles for Butterworth prototype - improved stability
         for (let i = 0; i < order; i++) {
             const theta = (Math.PI * (2 * i + 1)) / (2 * order);
             const real = -Math.sin(theta);
@@ -194,6 +236,6 @@ export class ButterworthFilter {
 // Helper function for complex numbers
 function complex(real: number, imag: number): number {
     // For simplicity, we're just returning the real part
-    // In a full implementation, this would handle complex numbers
+    // In a full implementation, this would handle complex numbers properly
     return real;
 }

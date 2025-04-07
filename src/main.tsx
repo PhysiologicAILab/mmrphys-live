@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/main.css';
+import { Paths } from '@/utils/paths';
 
 // Error boundary for the entire application
 class ErrorBoundary extends React.Component<

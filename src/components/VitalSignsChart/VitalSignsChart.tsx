@@ -76,13 +76,13 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     display: true,
                     text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
                 },
-                min: type === 'bvp' ? -2 : -1,
-                max: type === 'bvp' ? 2 : 1
+                min: type === 'bvp' ? -1.5 : -0.8,
+                max: type === 'bvp' ? 1.5 : 0.8
             }
         },
         plugins: {
             legend: {
-                display: true
+                display: false // Hide legend since we're only showing one dataset
             },
             tooltip: {
                 enabled: true,
@@ -91,9 +91,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 callbacks: {
                     label: (context: { parsed: { y: number }, datasetIndex: number }) => {
                         const value = context.parsed.y;
-                        const label = context.datasetIndex === 0
-                            ? `Raw ${type === 'bvp' ? 'BVP' : 'Resp'}`
-                            : `Filtered ${type === 'bvp' ? 'BVP' : 'Resp'}`;
+                        const label = type === 'bvp' ? 'Filtered BVP' : 'Filtered Resp';
                         return `${label}: ${value.toFixed(3)}`;
                     }
                 }
@@ -109,26 +107,14 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
         }
     }), [title, rate, snr, type]);
 
-    // Chart data with safety checks
+    // Chart data with safety checks - only show filtered data
     const chartData = useMemo(() => ({
         labels: Array.isArray(data) ? data.map((_, i) => (i / 30).toFixed(1)) : [],
         datasets: [
+            // Only include the filtered dataset
             {
-                label: type === 'bvp' ? 'Raw Blood Volume Pulse' : 'Raw Respiratory Signal',
-                data: Array.isArray(data) ? data : [],
-                borderColor: type === 'bvp' ? 'rgb(75, 192, 192)' : 'rgb(255, 99, 132)',
-                backgroundColor: type === 'bvp'
-                    ? 'rgba(75, 192, 192, 0.2)'
-                    : 'rgba(255, 99, 132, 0.2)',
-                fill: true,
-                tension: 0.4,
-                borderWidth: 2,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            ...(filteredData ? [{
                 label: type === 'bvp' ? 'Filtered Blood Volume Pulse' : 'Filtered Respiratory Signal',
-                data: filteredData,
+                data: filteredData || data, // Use filteredData if available, otherwise fall back to data
                 borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
                 backgroundColor: type === 'bvp'
                     ? 'rgba(0, 105, 105, 0.2)'
@@ -137,9 +123,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 tension: 0.4,
                 borderWidth: 2,
                 pointRadius: 0,
-                pointHoverRadius: 4,
-                borderDash: [5, 5]
-            }] : [])
+                pointHoverRadius: 4
+            }
         ]
     }), [data, filteredData, type]);
 
