@@ -12,7 +12,7 @@ export class FaceDetector {
     private detectionInterval: number | null = null;
     private isInitialized: boolean = false;
     private lastDetectionTime: number = 0;
-    private readonly detectionThrottleMs: number = 1000; // 1 second throttle
+    private readonly detectionThrottleMs: number = 30; // 30 ms throttle
     private initializationPromise: Promise<void> | null = null;
     private readonly options: faceapi.TinyFaceDetectorOptions;
     private isCapturing: boolean = false;

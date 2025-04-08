@@ -17,8 +17,8 @@ HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
     drawImage: vi.fn(),
     getImageData: vi.fn().mockReturnValue({
         data: new Uint8ClampedArray(324),
-        width: 9,
-        height: 9
+        width: 72,
+        height: 72
     }),
     putImageData: vi.fn(),
     clearRect: vi.fn(),

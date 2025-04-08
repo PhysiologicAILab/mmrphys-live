@@ -15,8 +15,8 @@ export interface SignalMetrics {
 export class SignalAnalyzer {
     private static readonly FREQ_RANGES = {
         heart: {
-            minFreq: 0.8,   // 48 BPM
-            maxFreq: 3.0    // 180 BPM
+            minFreq: 0.6,   // 36 BPM
+            maxFreq: 3.3    // 198 BPM
         },
         resp: {
             minFreq: 0.1,   // 6 breaths/minute
@@ -26,8 +26,8 @@ export class SignalAnalyzer {
 
     private static readonly RATE_RANGES = {
         heart: {
-            min: 40,
-            max: 180,
+            min: 36,
+            max: 198,
             default: 75
         },
         resp: {

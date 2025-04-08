@@ -37,8 +37,8 @@ class InferenceWorker {
     private MIN_FRAMES_REQUIRED = 181; // Will be updated from config
     private fps: number = 30;
     private modelConfig: ModelConfig | null = null;
-    private frameHeight: number = 9;  // Will be updated from config
-    private frameWidth: number = 9;   // Will be updated from config
+    private frameHeight: number = 72;  // Will be updated from config
+    private frameWidth: number = 72;   // Will be updated from config
     private sequenceLength: number = 181; // Will be updated from config
 
     async initialize(): Promise<void> {

@@ -51,20 +51,20 @@ export class SignalProcessor {
         this.respBuffer = this.createBuffer();
 
         // Use more precise Hz values for physiological signals
-        // For heart rate: 0.75-3.0 Hz corresponds to 45-180 BPM
+        // For heart rate: 0.60-3.3 Hz corresponds to 36-198 BPM
         // For respiration: 0.1-0.5 Hz corresponds to 6-30 breaths/min
-        const bvpLowCutoff = 0.75 / (fps / 2);  // Convert Hz to normalized frequency
-        const bvpHighCutoff = 3.0 / (fps / 2);
+        const bvpLowCutoff = 0.60; // (fps / 2);  // Convert Hz to normalized frequency
+        const bvpHighCutoff = 3.3; // (fps / 2);
 
-        const respLowCutoff = 0.1 / (fps / 2);
-        const respHighCutoff = 0.5 / (fps / 2);
+        const respLowCutoff = 0.1; // (fps / 2);
+        const respHighCutoff = 0.5; // (fps / 2);
 
         // Initialize filters with higher order for better response
         this.bvpFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(bvpLowCutoff, bvpHighCutoff, fps, 4) // 4th order
+            ButterworthFilter.designBandpass(bvpLowCutoff, bvpHighCutoff, fps, 2) // 2nd order
         );
         this.respFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(respLowCutoff, respHighCutoff, fps, 4) // 4th order
+            ButterworthFilter.designBandpass(respLowCutoff, respHighCutoff, fps, 2) // 2nd order
         );
     }
 
@@ -253,7 +253,7 @@ export class SignalProcessor {
         if (validSignal.length === 0) return signal.map(() => 0);
 
         // Use a sliding window approach for stable normalization
-        const windowSize = this.fps * 3; // 3-second window
+        const windowSize = this.fps * 6; // 6-second window
         const normalizedSignal: number[] = [];
 
         for (let i = 0; i < signal.length; i++) {
@@ -336,7 +336,7 @@ export class SignalProcessor {
             
             // Find dominant frequency in physiological range
             const freqRange = type === 'bvp' 
-                ? { min: 0.75, max: 3.0 }  // 45-180 BPM
+                ? { min: 0.60, max: 3.3 }  // 45-180 BPM
                 : { min: 0.1, max: 0.5 };  // 6-30 breaths/min
             
             const dominantFreq = this.findDominantFrequency(spectrum, freqRange);
@@ -368,7 +368,7 @@ export class SignalProcessor {
             
             // Ensure rate is within physiological range
             if (type === 'bvp') {
-                rate = Math.max(45, Math.min(180, rate));
+                rate = Math.max(36, Math.min(198, rate));
             } else {
                 rate = Math.max(6, Math.min(30, rate));
             }

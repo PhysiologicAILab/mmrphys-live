@@ -46,7 +46,7 @@ async function processVideoFrame(imageData: ImageData, faceBox?: {
     y: number;
     width: number;
     height: number;
-} | null, targetWidth: number = 9, targetHeight: number = 9): Promise<ImageData> {
+} | null, targetWidth: number = 72, targetHeight: number = 72): Promise<ImageData> {
     // Create an offscreen canvas for processing
     const canvas = new OffscreenCanvas(targetWidth, targetHeight);
     const ctx = canvas.getContext('2d');
@@ -131,8 +131,8 @@ self.onmessage = async (e: MessageEvent) => {
                 }
 
                 // Get target dimensions from message if provided
-                const targetWidth = e.data.targetWidth || 9;
-                const targetHeight = e.data.targetHeight || 9;
+                const targetWidth = e.data.targetWidth || 72;
+                const targetHeight = e.data.targetHeight || 72;
 
                 try {
                     // Process the video frame and await the result

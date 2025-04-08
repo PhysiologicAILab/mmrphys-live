@@ -99,7 +99,7 @@ export class ButterworthFilter {
     /**
      * Design Butterworth bandpass filter with improved parameters
      */
-    static designBandpass(lowFreq: number, highFreq: number, samplingRate: number, order: number = 4): FilterCoefficients {
+    static designBandpass(lowFreq: number, highFreq: number, samplingRate: number, order: number = 2): FilterCoefficients {
         // Increase order to 4 for sharper cutoff
         // Normalize frequencies
         const nyquist = samplingRate / 2;

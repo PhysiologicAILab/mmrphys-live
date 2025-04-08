@@ -26,7 +26,7 @@ export class VideoProcessor {
     private faceDetector: FaceDetector;
     private currentFaceBox: FaceBox | null = null;
     private lastFaceDetectionTime: number = 0;
-    private readonly faceDetectionInterval: number = 100; // 10 times in a second
+    private readonly faceDetectionInterval: number = 30; // 30 ms (equal to framerate)
     private configLoaded: boolean = false;
 
     constructor() {

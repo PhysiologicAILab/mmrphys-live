@@ -259,8 +259,8 @@ export class VitalSignsModel {
             throw new Error('Session not properly initialized');
         }
 
-        const dummyInput = new Float32Array(1 * 90 * 3 * 9 * 9).fill(0);
-        const tensorDims = [1, 90, 3, 9, 9];
+        const dummyInput = new Float32Array(1 * 90 * 3 * 72 * 72).fill(0);
+        const tensorDims = [1, 90, 3, 72, 72];
         const input = new ort.Tensor('float32', dummyInput, tensorDims);
         const feeds: Record<string, ort.Tensor> = {};
         feeds[this.inputName] = input;
@@ -279,8 +279,8 @@ export class VitalSignsModel {
 
         const batchSize = 1;
         const sequenceLength = frameBuffer.length;
-        const height = this.config.input_size[3] || 9; // Get from config
-        const width = this.config.input_size[4] || 9;  // Get from config
+        const height = this.config.input_size[3] || 72; // Get from config
+        const width = this.config.input_size[4] || 72;  // Get from config
         const channels = 3;
 
         const inputTensor = new Float32Array(
@@ -334,7 +334,7 @@ export class VitalSignsModel {
             const startTime = performance.now();
             const inputTensor = this.preprocessFrames(frameBuffer);
 
-            const tensorDims = [1, frameBuffer.length, 3, 9, 9];
+            const tensorDims = [1, frameBuffer.length, 3, 72, 72];
             const input = new ort.Tensor('float32', inputTensor, tensorDims);
 
             const feeds: Record<string, ort.Tensor> = {};
