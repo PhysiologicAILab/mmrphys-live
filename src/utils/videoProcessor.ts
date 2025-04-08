@@ -10,8 +10,8 @@ export class VideoProcessor {
     private processingCtx: CanvasRenderingContext2D;
     private displayCanvas: HTMLCanvasElement | null = null;
     private displayCtx: CanvasRenderingContext2D | null = null;
-    private frameWidth: number = 9;  // Default, will be updated from config
-    private frameHeight: number = 9; // Default, will be updated from config
+    private frameWidth: number = 72;  // Default, will be updated from config
+    private frameHeight: number = 72; // Default, will be updated from config
     private frameBuffer: ImageData[] = [];
     private MIN_FRAMES_REQUIRED = 181; // Will be updated from config if available
     private readonly MAX_BUFFER_SIZE = 301;     // 10 seconds at 30 FPS +1 frame for Diff
