@@ -587,12 +587,15 @@ export class SignalProcessor {
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
         const displaySamples = this.DISPLAY_WINDOW * this.fps;
 
-        // Use raw data for historical context but filtered for display
+        // Apply additional visual smoothing to filtered signals
+        const smoothedBvp = this.smoothSignal(this.bvpBuffer.filtered.slice(-displaySamples), 5);
+        const smoothedResp = this.smoothSignal(this.respBuffer.filtered.slice(-displaySamples), 7);
+
         return {
             bvp: this.bvpBuffer.raw.slice(-displaySamples),
             resp: this.respBuffer.raw.slice(-displaySamples),
-            filteredBvp: this.bvpBuffer.normalized.slice(-displaySamples),
-            filteredResp: this.respBuffer.normalized.slice(-displaySamples)
+            filteredBvp: this.normalizeForDisplay(smoothedBvp),
+            filteredResp: this.normalizeForDisplay(smoothedResp)
         };
     }
 
@@ -602,21 +605,20 @@ export class SignalProcessor {
         const validValues = signal.filter(v => isFinite(v) && !isNaN(v));
         if (validValues.length === 0) return signal.map(() => 0);
 
-        // Use robust statistics instead of min/max
+        // Use more aggressive percentile clipping for visualization
         const sorted = [...validValues].sort((a, b) => a - b);
-        const lowerBound = sorted[Math.floor(sorted.length * 0.05)]; // 5th percentile
-        const upperBound = sorted[Math.floor(sorted.length * 0.95)]; // 95th percentile
+        const lowerBound = sorted[Math.floor(sorted.length * 0.1)]; // 10th percentile
+        const upperBound = sorted[Math.floor(sorted.length * 0.9)]; // 90th percentile
 
         const range = upperBound - lowerBound;
-
         if (range === 0) return signal.map(() => 0);
 
-        // Center around zero with robust normalization
+        // Center around zero with more aggressive normalization
         return signal.map(v => {
             if (!isFinite(v) || isNaN(v)) return 0;
             const normalized = 2 * ((v - lowerBound) / range) - 1;
-            // Clamp values to avoid extreme outliers
-            return Math.max(-1.5, Math.min(1.5, normalized));
+            // Tighter clamping for better visual appearance
+            return Math.max(-1.0, Math.min(1.0, normalized));
         });
     }
 
