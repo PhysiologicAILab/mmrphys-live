@@ -10,16 +10,24 @@ export interface FaceBox {
 export class FaceDetector {
     private currentFaceBox: FaceBox | null = null;
     private detectionInterval: number | null = null;
-    private isInitialized: boolean = false;
+    public isInitialized: boolean = false;
     private lastDetectionTime: number = 0;
-    private readonly detectionThrottleMs: number = 30; // 30 ms throttle
+    private readonly detectionThrottleMs: number = 200; // 200 ms throttle
     private initializationPromise: Promise<void> | null = null;
     private readonly options: faceapi.TinyFaceDetectorOptions;
-    private isCapturing: boolean = false;
-    private readonly smoothingFactor: number = 0.3;
+    public isCapturing: boolean = false;
     private temporaryCanvas: HTMLCanvasElement | null = null;
-    private errorCount: number = 0;
-    private readonly MAX_ERROR_THRESHOLD: number = 5;
+    private faceBoxHistory: FaceBox[] = []; // Rolling history of face boxes
+    private readonly MAX_HISTORY_SIZE: number = 10; // Maximum size of rolling history
+    public noDetectionCount: number = 0; // Counter for consecutive no-detection frames
+    private readonly MAX_NO_DETECTION_FRAMES: number = 20; // Threshold to stop capture
+    private onDetectionStopped: (() => void) | null = null; // Callback for detection stop
+    private initialGracePeriod: boolean = true;
+    private readonly GRACE_PERIOD_DURATION: number = 2000; // 2 seconds in ms
+
+    setOnDetectionStoppedCallback(callback: () => void): void {
+        this.onDetectionStopped = callback;
+    }
 
     constructor() {
         this.options = new faceapi.TinyFaceDetectorOptions({
@@ -41,9 +49,6 @@ export class FaceDetector {
 
         this.initializationPromise = (async () => {
             try {
-                // Reset error count on new initialization
-                this.errorCount = 0;
-
                 // Comprehensive setup steps
                 await this.setupFaceAPIEnvironment();
                 await this.loadModelWeights();
@@ -168,86 +173,106 @@ export class FaceDetector {
     }
 
     async detectFace(videoElement: HTMLVideoElement): Promise<FaceBox | null> {
-        // Check initialization and prerequisites
         if (!this.isInitialized || !this.temporaryCanvas) {
             console.warn('Face detector not properly initialized');
             return this.currentFaceBox;
         }
 
-        // Throttle detection attempts
         const currentTime = Date.now();
         if (currentTime - this.lastDetectionTime < this.detectionThrottleMs) {
             return this.currentFaceBox;
         }
 
         try {
-            // Prepare canvas for detection
             const ctx = this.temporaryCanvas.getContext('2d');
             if (!ctx) throw new Error('Failed to get canvas context');
 
-            // Draw video frame to temporary canvas
             ctx.drawImage(videoElement, 0, 0, this.temporaryCanvas.width, this.temporaryCanvas.height);
-
-            // Detect face
             const detection = await faceapi.detectSingleFace(this.temporaryCanvas, this.options);
 
             if (detection) {
-                // Reset error count on successful detection
-                this.errorCount = 0;
+                this.noDetectionCount = 0; // Reset no-detection counter
+                this.initialGracePeriod = false; // End grace period
+                const scaledBox = this.scaleBoundingBox(detection.box, videoElement);
 
-                // Scale detection box back to video dimensions
-                const scaleX = videoElement.videoWidth / this.temporaryCanvas.width;
-                const scaleY = videoElement.videoHeight / this.temporaryCanvas.height;
-
-                const scaledBox = {
-                    x: Math.round(detection.box.x * scaleX),
-                    y: Math.round(detection.box.y * scaleY),
-                    width: Math.round(detection.box.width * scaleX),
-                    height: Math.round(detection.box.height * scaleY)
-                };
-
-                // Apply smoothing if we have a previous face box
-                this.currentFaceBox = this.currentFaceBox
-                    ? this.smoothFaceBox(scaledBox)
-                    : scaledBox;
+                // Add to history and calculate rolling median
+                this.faceBoxHistory.push(scaledBox);
+                if (this.faceBoxHistory.length > this.MAX_HISTORY_SIZE) {
+                    this.faceBoxHistory.shift();
+                }
+                this.currentFaceBox = this.calculateRollingMedian();
             } else {
-                // Increment error count for no face detection
-                this.errorCount++;
-
-                // Check if we've exceeded error threshold
-                if (this.errorCount >= this.MAX_ERROR_THRESHOLD) {
-                    console.warn('Exceeded maximum face detection errors');
+                this.noDetectionCount++;
+                if (!this.initialGracePeriod && this.noDetectionCount >= this.MAX_NO_DETECTION_FRAMES) {
+                    console.warn('Face not detected for consecutive frames. Triggering stop capture.');
+                    this.stopDetection();
                     this.currentFaceBox = null;
+
+                    // Notify application about detection stop
+                    if (this.onDetectionStopped) {
+                        this.onDetectionStopped();
+                    }
+                } else {
+                    // Use the current median values if no face is detected
+                    this.currentFaceBox = this.calculateRollingMedian();
                 }
             }
 
             this.lastDetectionTime = currentTime;
             return this.currentFaceBox;
         } catch (error) {
-            // Increment error count
-            this.errorCount++;
-
             console.error('Face detection error:', error);
-
-            // Check if we've exceeded error threshold
-            if (this.errorCount >= this.MAX_ERROR_THRESHOLD) {
-                console.warn('Exceeded maximum face detection errors');
-                this.currentFaceBox = null;
+            this.noDetectionCount++;
+            if (this.noDetectionCount >= this.MAX_NO_DETECTION_FRAMES) {
+                console.warn('Face not detected for consecutive frames. Triggering stop capture.');
                 this.stopDetection();
-            }
+                this.currentFaceBox = null;
 
+                // Notify application about detection stop
+                if (this.onDetectionStopped) {
+                    this.onDetectionStopped();
+                }
+            }
             return this.currentFaceBox;
         }
     }
 
-    private smoothFaceBox(newBox: FaceBox): FaceBox {
-        if (!this.currentFaceBox) return newBox;
+    private scaleBoundingBox(box: faceapi.Box, videoElement: HTMLVideoElement): FaceBox {
+        if (!this.temporaryCanvas) {
+            throw new Error('Temporary canvas is not initialized');
+        }
+        const scaleX = videoElement.videoWidth / this.temporaryCanvas.width;
+        const scaleY = videoElement.videoHeight / this.temporaryCanvas.height;
 
         return {
-            x: Math.round(this.smoothingFactor * newBox.x + (1 - this.smoothingFactor) * this.currentFaceBox.x),
-            y: Math.round(this.smoothingFactor * newBox.y + (1 - this.smoothingFactor) * this.currentFaceBox.y),
-            width: Math.round(this.smoothingFactor * newBox.width + (1 - this.smoothingFactor) * this.currentFaceBox.width),
-            height: Math.round(this.smoothingFactor * newBox.height + (1 - this.smoothingFactor) * this.currentFaceBox.height)
+            x: Math.round(box.x * scaleX),
+            y: Math.round(box.y * scaleY),
+            width: Math.round(box.width * scaleX),
+            height: Math.round(box.height * scaleY)
+        };
+    }
+
+    private calculateRollingMedian(): FaceBox | null {
+        if (this.faceBoxHistory.length === 0) return this.currentFaceBox;
+
+        const median = (values: number[]) => {
+            const sorted = [...values].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return sorted.length % 2 !== 0
+                ? sorted[mid]
+                : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+        };
+
+        const xs = this.faceBoxHistory.map(box => box.x);
+        const ys = this.faceBoxHistory.map(box => box.y);
+        const widths = this.faceBoxHistory.map(box => box.width);
+        const heights = this.faceBoxHistory.map(box => box.height);
+
+        return {
+            x: median(xs),
+            y: median(ys),
+            width: median(widths),
+            height: median(heights)
         };
     }
 
@@ -259,6 +284,16 @@ export class FaceDetector {
         // Stop any existing detection
         this.stopDetection();
 
+        // Reset states
+        this.noDetectionCount = 0;
+        this.initialGracePeriod = true;
+
+        // Start grace period timer
+        setTimeout(() => {
+            this.initialGracePeriod = false;
+            console.log('Face detection grace period ended');
+        }, this.GRACE_PERIOD_DURATION);
+
         // Start continuous detection
         this.detectionInterval = window.setInterval(
             () => this.detectFace(videoElement),
@@ -268,6 +303,7 @@ export class FaceDetector {
         console.log('Face detection started');
     }
 
+
     stopDetection(): void {
         if (this.detectionInterval) {
             clearInterval(this.detectionInterval);
@@ -275,6 +311,9 @@ export class FaceDetector {
             console.log('Face detection stopped');
         }
         this.currentFaceBox = null;
+        this.faceBoxHistory = []; // Clear rolling history
+        this.noDetectionCount = 0; // Reset no-detection counter
+        this.isCapturing = false; // Ensure capturing state is reset
     }
 
     getCurrentFaceBox(): FaceBox | null {
@@ -291,7 +330,6 @@ export class FaceDetector {
         this.currentFaceBox = null;
         this.isInitialized = false;
         this.lastDetectionTime = 0;
-        this.errorCount = 0;
 
         // Clear temporary canvas
         if (this.temporaryCanvas) {
@@ -308,11 +346,15 @@ export class FaceDetector {
             // Stop detection and cleanup
             this.cleanup();
 
-            // Dispose of model
+            // Dispose of the model if loaded
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
                 await faceapi.nets.tinyFaceDetector.dispose();
                 console.log('Face detection model disposed');
             }
+
+            // Reset state to allow reinitialization
+            this.isInitialized = false;
+            this.initializationPromise = null;
         } catch (error) {
             console.warn('Error during face detector disposal:', error);
         }

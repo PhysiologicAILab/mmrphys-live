@@ -2,7 +2,7 @@
 
 import { ExportData } from '../types';
 import { ButterworthFilter } from './butterworthFilter';
-import { SignalAnalyzer, SignalMetrics } from './signalAnalysis';
+import { SignalMetrics } from './signalAnalysis';
 
 export interface SignalBuffer {
     raw: number[];
@@ -39,9 +39,6 @@ export class SignalProcessor {
     private bvpRateHistory: number[] = [];
     private respRateHistory: number[] = [];
 
-    // Artifact detection
-    private readonly MAX_DERIVATIVE = 0.3; // Maximum allowed signal derivative
-    private readonly OUTLIER_THRESHOLD = 3.0; // Standard deviations for outlier detection
 
     constructor(fps: number = 30) {
         this.fps = fps;
@@ -87,13 +84,9 @@ export class SignalProcessor {
             filteredResp: number[]
         }
     } {
-        // Enhanced preprocessing with artifact rejection
-        const cleanedBvpSignal = this.preprocessSignal(bvpSignal, 'bvp');
-        const cleanedRespSignal = this.preprocessSignal(respSignal, 'resp');
-
         // Update buffers with cleaned signals
-        this.updateBuffer(this.bvpBuffer, cleanedBvpSignal);
-        this.updateBuffer(this.respBuffer, cleanedRespSignal);
+        this.updateBuffer(this.bvpBuffer, bvpSignal);
+        this.updateBuffer(this.respBuffer, respSignal);
         this.timestamps.push(timestamp);
 
         // Maintain buffer size
@@ -122,88 +115,6 @@ export class SignalProcessor {
         };
     }
 
-    // Enhanced preprocessing with type-specific artifact rejection
-    private preprocessSignal(signal: number[], type: 'bvp' | 'resp'): number[] {
-        if (signal.length === 0) return signal;
-
-        // Step 1: Calculate statistics for artifact detection
-        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-        const squaredDiffs = signal.map(val => (val - mean) ** 2);
-        const variance = squaredDiffs.reduce((a, b) => a + b, 0) / signal.length;
-        const stdDev = Math.sqrt(variance);
-
-        // Step 2: Detect and replace outliers
-        const threshold = this.OUTLIER_THRESHOLD * stdDev;
-        let processedSignal = signal.map(val => {
-            // Replace extreme outliers with the mean value
-            return Math.abs(val - mean) > threshold ? mean : val;
-        });
-
-        // Step 3: Apply smoothing based on signal type
-        if (type === 'bvp') {
-            // For BVP, apply a 3-point moving average to reduce high-frequency noise
-            processedSignal = this.smoothSignal(processedSignal, 3);
-        } else {
-            // For respiratory signal, use a wider 5-point moving average
-            processedSignal = this.smoothSignal(processedSignal, 5);
-        }
-
-        // Step 4: Apply derivative limiting to prevent sudden changes
-        processedSignal = this.limitDerivative(processedSignal, this.MAX_DERIVATIVE);
-
-        return processedSignal;
-    }
-
-    // Apply a simple moving average filter
-    private smoothSignal(signal: number[], windowSize: number): number[] {
-        if (windowSize <= 1 || signal.length < windowSize) return signal;
-
-        const result = new Array(signal.length).fill(0);
-
-        // Handle edge cases for first windowSize/2 elements
-        for (let i = 0; i < Math.floor(windowSize / 2); i++) {
-            const validWindow = signal.slice(0, i * 2 + 1);
-            result[i] = validWindow.reduce((a, b) => a + b, 0) / validWindow.length;
-        }
-
-        // Apply moving average for middle elements
-        for (let i = Math.floor(windowSize / 2); i < signal.length - Math.floor(windowSize / 2); i++) {
-            let sum = 0;
-            for (let j = i - Math.floor(windowSize / 2); j <= i + Math.floor(windowSize / 2); j++) {
-                sum += signal[j];
-            }
-            result[i] = sum / windowSize;
-        }
-
-        // Handle edge cases for last windowSize/2 elements
-        for (let i = signal.length - Math.floor(windowSize / 2); i < signal.length; i++) {
-            const validWindow = signal.slice(2 * i - signal.length + 1, signal.length);
-            result[i] = validWindow.reduce((a, b) => a + b, 0) / validWindow.length;
-        }
-
-        return result;
-    }
-
-    // Limit the derivative (rate of change) in a signal
-    private limitDerivative(signal: number[], maxDerivative: number): number[] {
-        if (signal.length <= 1) return signal;
-
-        const result = [signal[0]];
-
-        for (let i = 1; i < signal.length; i++) {
-            const derivative = signal[i] - result[i - 1];
-
-            if (Math.abs(derivative) > maxDerivative) {
-                // Limit the change
-                result.push(result[i - 1] + Math.sign(derivative) * maxDerivative);
-            } else {
-                result.push(signal[i]);
-            }
-        }
-
-        return result;
-    }
-
     private removeDC(signal: number[]): number[] {
         if (signal.length === 0) return [];
 
@@ -221,27 +132,15 @@ export class SignalProcessor {
         // Remove DC component before filtering
         const dcRemovedNew = this.removeDC(newSignal);
 
-        // Get current filter state from previous samples
-        const filter = buffer === this.bvpBuffer ? this.bvpFilter : this.respFilter;
-
         // Filter only the new chunk
-        const filteredNew = filter.processSignal(dcRemovedNew);
-
-        // Sanitize and add to filtered buffer
-        const sanitizedNew = filteredNew.map(val => {
-            if (isNaN(val) || !isFinite(val)) return 0;
-            return val;
-        });
+        const filteredNew = buffer === this.bvpBuffer
+            ? this.bvpFilter.processSignal(dcRemovedNew)
+            : this.respFilter.processSignal(dcRemovedNew);
 
         // Append new filtered data
-        buffer.filtered.push(...sanitizedNew);
+        buffer.filtered.push(...filteredNew);
 
-        // Ensure both buffers maintain same length
-        while (buffer.filtered.length > buffer.raw.length) {
-            buffer.filtered.shift();
-        }
-
-        // Improve physiological signal normalization for visualization
+        // Normalize filtered signal
         buffer.normalized = this.normalizePhysiologicalSignal(buffer.filtered, buffer === this.bvpBuffer);
     }
 
@@ -252,45 +151,14 @@ export class SignalProcessor {
         const validSignal = signal.filter(val => isFinite(val) && !isNaN(val));
         if (validSignal.length === 0) return signal.map(() => 0);
 
-        // Use a sliding window approach for stable normalization
-        const windowSize = this.fps * 6; // 6-second window
-        const normalizedSignal: number[] = [];
+        const min = Math.min(...validSignal);
+        const max = Math.max(...validSignal);
+        const range = max - min;
 
-        for (let i = 0; i < signal.length; i++) {
-            // Calculate window boundaries
-            const windowStart = Math.max(0, i - windowSize / 2);
-            const windowEnd = Math.min(signal.length, i + windowSize / 2);
-            const window = signal.slice(windowStart, windowEnd);
+        if (range === 0) return signal.map(() => 0);
 
-            // Filter out invalid values
-            const validWindow = window.filter(val => isFinite(val) && !isNaN(val));
-            if (validWindow.length === 0) {
-                normalizedSignal.push(0);
-                continue;
-            }
-
-            // Find robust min/max using percentiles instead of absolute min/max
-            const sortedValues = [...validWindow].sort((a, b) => a - b);
-            const lowPercentile = sortedValues[Math.floor(sortedValues.length * 0.05)];
-            const highPercentile = sortedValues[Math.floor(sortedValues.length * 0.95)];
-
-            // Avoid division by zero
-            if (highPercentile === lowPercentile) {
-                normalizedSignal.push(0);
-                continue;
-            }
-
-            // Normalize current value within window context with percentile bounds
-            const normalizedValue = (signal[i] - lowPercentile) / (highPercentile - lowPercentile);
-
-            // Scale to proper range with improved limits
-            normalizedSignal.push(isBVP
-                ? Math.max(-1.5, Math.min(1.5, 2 * normalizedValue - 1)) // BVP: -1.5 to 1.5 
-                : Math.max(-0.8, Math.min(0.8, 2 * normalizedValue - 1))  // Resp: -0.8 to 0.8
-            );
-        }
-
-        return normalizedSignal;
+        // Normalize to [-1, 1] range
+        return signal.map(val => (2 * ((val - min) / range) - 1));
     }
 
     private maintainBufferSize(): void {
@@ -587,39 +455,25 @@ export class SignalProcessor {
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
         const displaySamples = this.DISPLAY_WINDOW * this.fps;
 
-        // Apply additional visual smoothing to filtered signals
-        const smoothedBvp = this.smoothSignal(this.bvpBuffer.filtered.slice(-displaySamples), 5);
-        const smoothedResp = this.smoothSignal(this.respBuffer.filtered.slice(-displaySamples), 7);
+        const normBVP = this.bvpBuffer.filtered.slice(-displaySamples);
+        const normResp = this.respBuffer.filtered.slice(-displaySamples);
+
+        // apply min-max normalization for BVP and Resp
+        const minBVP = Math.min(...normBVP);
+        const maxBVP = Math.max(...normBVP);
+        const minResp = Math.min(...normResp);
+        const maxResp = Math.max(...normResp);
+        const rangeBVP = maxBVP - minBVP;
+        const rangeResp = maxResp - minResp;
+        const normalizedBVP = normBVP.map(val => (val - minBVP) / rangeBVP);
+        const normalizedResp = normResp.map(val => (val - minResp) / rangeResp);
 
         return {
             bvp: this.bvpBuffer.raw.slice(-displaySamples),
             resp: this.respBuffer.raw.slice(-displaySamples),
-            filteredBvp: this.normalizeForDisplay(smoothedBvp),
-            filteredResp: this.normalizeForDisplay(smoothedResp)
+            filteredBvp: normalizedBVP,
+            filteredResp: normalizedResp
         };
-    }
-
-    private normalizeForDisplay(signal: number[]): number[] {
-        if (signal.length === 0) return [];
-
-        const validValues = signal.filter(v => isFinite(v) && !isNaN(v));
-        if (validValues.length === 0) return signal.map(() => 0);
-
-        // Use more aggressive percentile clipping for visualization
-        const sorted = [...validValues].sort((a, b) => a - b);
-        const lowerBound = sorted[Math.floor(sorted.length * 0.1)]; // 10th percentile
-        const upperBound = sorted[Math.floor(sorted.length * 0.9)]; // 90th percentile
-
-        const range = upperBound - lowerBound;
-        if (range === 0) return signal.map(() => 0);
-
-        // Center around zero with more aggressive normalization
-        return signal.map(v => {
-            if (!isFinite(v) || isNaN(v)) return 0;
-            const normalized = 2 * ((v - lowerBound) / range) - 1;
-            // Tighter clamping for better visual appearance
-            return Math.max(-1.0, Math.min(1.0, normalized));
-        });
     }
 
     getExportData(): ExportData {

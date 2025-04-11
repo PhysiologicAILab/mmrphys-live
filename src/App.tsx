@@ -56,6 +56,34 @@ const App: React.FC = () => {
                 // Initialize video processor
                 videoProcessorRef.current = new VideoProcessor();
 
+                // Set up face detection stop callback
+                videoProcessorRef.current.faceDetector.setOnDetectionStoppedCallback(async () => {
+                    console.warn('Face detection stopped due to consecutive missed detections.');
+
+                    // Stop the entire capture pipeline
+                    if (videoProcessorRef.current) {
+                        await videoProcessorRef.current.stopCapture();
+                    }
+
+                    // Stop monitoring interval
+                    if (progressIntervalRef.current) {
+                        clearInterval(progressIntervalRef.current);
+                        progressIntervalRef.current = null;
+                    }
+
+                    // Reset UI state completely
+                    setIsCapturing(false);
+                    setBufferProgress(0);
+
+                    // Reset vital signs data
+                    resetData();
+
+                    setStatusMessage({
+                        message: 'Face detection stopped. Please restart capture.',
+                        type: 'warning'
+                    });
+                });
+
                 // Create inference worker
                 const worker = new Worker(
                     new URL('./workers/inferenceWorker.ts', import.meta.url),
@@ -230,6 +258,9 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
+            // Reset metrics buffers before starting new capture
+            resetData();
+
             await videoProcessorRef.current.startCapture();
             setIsCapturing(true);
             startMonitoring();
@@ -241,12 +272,11 @@ const App: React.FC = () => {
         } catch (error) {
             setIsCapturing(false);
             setStatusMessage({
-                message: `Failed to start capture: ${error instanceof Error ? error.message : 'Unknown error'
-                    }`,
+                message: `Failed to start capture: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 type: 'error'
             });
         }
-    }, [startMonitoring]);
+    }, [startMonitoring, resetData]);  // Add resetData to dependencies
 
     // Stop capture handler
     const handleStopCapture = useCallback(async () => {

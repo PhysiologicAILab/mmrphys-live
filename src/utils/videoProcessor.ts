@@ -23,7 +23,7 @@ export class VideoProcessor {
     private readonly frameInterval: number = 1000 / 30; // For 30 FPS
     private onFrameProcessed: ((frame: ImageData) => void) | null = null;
     private processingFrameId: number | null = null;
-    private faceDetector: FaceDetector;
+    public faceDetector: FaceDetector;
     private currentFaceBox: FaceBox | null = null;
     private lastFaceDetectionTime: number = 0;
     private readonly faceDetectionInterval: number = 30; // 30 ms (equal to framerate)
@@ -94,11 +94,27 @@ export class VideoProcessor {
 
     async startCapture(): Promise<void> {
         try {
+            // Clear frame buffer
+            this.frameBuffer = [];
+            this.currentFaceBox = null;
+
+            // Reset signal buffers (if applicable)
+            if (this.onFrameProcessed) {
+                this.onFrameProcessed = null;
+            }
+
             // Load frame dimensions from config
             await this.loadConfigSettings();
 
-            // Initialize face detector first
-            await this.initializeFaceDetector();
+            // Reinitialize face detector
+            if (!this.faceDetector.isInitialized) {
+                console.log('Reinitializing face detector...');
+                await this.faceDetector.initialize();
+            } else {
+                // Reset face detector state if already initialized
+                this.faceDetector.stopDetection();
+                this.faceDetector.noDetectionCount = 0; // Reset no-detection counter
+            }
 
             const constraints = {
                 video: {
@@ -171,13 +187,11 @@ export class VideoProcessor {
         if (now - this.lastFaceDetectionTime >= this.faceDetectionInterval) {
             try {
                 const detectedFace = await this.faceDetector.detectFace(this.videoElement);
-                if (detectedFace) {
-                    this.currentFaceBox = detectedFace;
-                }
-                this.lastFaceDetectionTime = now;
+                this.currentFaceBox = detectedFace;
             } catch (error) {
                 console.error('Face detection error:', error);
             }
+            this.lastFaceDetectionTime = now;
         }
     }
 
@@ -315,18 +329,26 @@ export class VideoProcessor {
         }
 
         if (this.mediaStream) {
+            // Stop all tracks in the media stream
             this.mediaStream.getTracks().forEach(track => track.stop());
             this.mediaStream = null;
         }
 
-        // Clean up face detector
-        await this.faceDetector.dispose();
-
+        // Reset the video element
         this.videoElement.srcObject = null;
+        this.videoElement.pause();
+        this.videoElement.removeAttribute('src'); // Clear the source
+        this.videoElement.load(); // Reset the video element
+
+        // Clear frame buffer and other state
         this.frameBuffer = [];
         this.lastFrameTime = 0;
         this.frameCount = 0;
         this.currentFaceBox = null;
+
+        // Do not dispose the face detector; reset its state instead
+        this.faceDetector.stopDetection();
+        this.faceDetector.noDetectionCount = 0; // Reset no-detection counter
     }
 
     getCurrentFaceBox(): FaceBox | null {

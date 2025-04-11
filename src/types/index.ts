@@ -75,10 +75,10 @@ export interface ControlsProps {
     onExport: () => void;
 }
 
-export interface StatusMessage {
+export type StatusMessage = {
     message: string;
-    type: 'info' | 'success' | 'error';
-}
+    type: 'error' | 'info' | 'success' | 'warning';
+};
 
 // Signal Metrics
 export interface SignalMetrics {

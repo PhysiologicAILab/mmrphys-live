@@ -7,7 +7,8 @@ const VitalSignsChartWrapper: React.FC<{
     rate: number;
     type: 'bvp' | 'resp';
     isReady: boolean;
-}> = React.memo(({ title, data, rate, type, isReady }) => {
+    snr: number;
+}> = React.memo(({ title, data, rate, type, isReady, snr}) => {
     console.log(`Rendering ${type} chart:`, {
         dataLength: data.length,
         rate,
@@ -23,6 +24,7 @@ const VitalSignsChartWrapper: React.FC<{
             rate={rate}
             type={type}
             isReady={shouldRender}
+            snr={snr}
         />
     );
 });

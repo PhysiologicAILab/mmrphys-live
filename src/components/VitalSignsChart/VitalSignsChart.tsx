@@ -76,8 +76,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     display: true,
                     text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
                 },
-                min: type === 'bvp' ? -1.1 : -1.1,
-                max: type === 'bvp' ? 1.1 : 1.1
+                min: type === 'bvp' ? -0.05 : -0.05,
+                max: type === 'bvp' ? 1.05 : 1.05
             }
         },
         plugins: {
