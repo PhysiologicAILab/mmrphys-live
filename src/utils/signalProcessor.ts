@@ -1,8 +1,5 @@
-// Enhanced signal processing logic for signalProcessor.ts
-
 import { ExportData } from '../types';
-import { ButterworthFilter } from './butterworthFilter';
-import { SignalMetrics } from './signalAnalysis';
+import { SignalAnalyzer, SignalMetrics } from './signalAnalysis';
 
 export interface SignalBuffer {
     raw: number[];
@@ -20,49 +17,39 @@ interface RatePoint {
 
 export class SignalProcessor {
     private readonly fps: number;
-    private readonly DISPLAY_WINDOW = 15; // Increased to 15 seconds
-    private readonly ANALYSIS_WINDOW = 10; // Analysis window for rate calculation
+    private readonly SEGMENT_SIZE: number = 6; // Segment size in seconds
+    private readonly DISPLAY_WINDOW = 15; // Display window in seconds
+    private readonly ANALYSIS_WINDOW = 10; // Analysis window for heart rate
     private readonly RESP_ANALYSIS_WINDOW = 30; // Respiratory analysis window
-    private readonly MAX_BUFFER = 450; // Increased buffer size (15 seconds * 30 fps)
-    private readonly RATE_SMOOTHING_WINDOW = 7; // Increased rate smoothing window
+    private readonly MAX_BUFFER = 900; // Buffer size (15 seconds * 30 fps)
+    private readonly RATE_SMOOTHING_WINDOW = 20; // Rate smoothing window
+
+    // Moving average window sizes for different signals (in seconds, converted to samples)
+    private readonly BVP_MA_WINDOW: number;
+    private readonly RESP_MA_WINDOW: number;
 
     // Signal buffers
     private bvpBuffer: SignalBuffer;
     private respBuffer: SignalBuffer;
     private timestamps: string[] = [];
 
-    // Butterworth filters with improved parameters
-    private readonly bvpFilter: ButterworthFilter;
-    private readonly respFilter: ButterworthFilter;
-
     // Smoothing for rate values
-    private bvpRateHistory: number[] = [];
-    private respRateHistory: number[] = [];
+    private bvpRateHistory: { rate: number, weight: number }[] = [];
+    private respRateHistory: { rate: number, weight: number }[] = [];
 
+    // Flag to track if capture is active
+    private isCapturing: boolean = false;
 
     constructor(fps: number = 30) {
         this.fps = fps;
 
+        // Set appropriate moving average window sizes based on sampling rate
+        this.BVP_MA_WINDOW = Math.round(0.15 * fps); // 150ms for heart rate
+        this.RESP_MA_WINDOW = Math.round(0.5 * fps);  // 500ms for respiration
+
         // Initialize buffers
         this.bvpBuffer = this.createBuffer();
         this.respBuffer = this.createBuffer();
-
-        // Use more precise Hz values for physiological signals
-        // For heart rate: 0.60-3.3 Hz corresponds to 36-198 BPM
-        // For respiration: 0.1-0.5 Hz corresponds to 6-30 breaths/min
-        const bvpLowCutoff = 0.60; // (fps / 2);  // Convert Hz to normalized frequency
-        const bvpHighCutoff = 3.3; // (fps / 2);
-
-        const respLowCutoff = 0.1; // (fps / 2);
-        const respHighCutoff = 0.5; // (fps / 2);
-
-        // Initialize filters with higher order for better response
-        this.bvpFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(bvpLowCutoff, bvpHighCutoff, fps, 2) // 2nd order
-        );
-        this.respFilter = new ButterworthFilter(
-            ButterworthFilter.designBandpass(respLowCutoff, respHighCutoff, fps, 2) // 2nd order
-        );
     }
 
     private createBuffer(): SignalBuffer {
@@ -71,6 +58,63 @@ export class SignalProcessor {
             filtered: [],
             normalized: [],
             rates: []
+        };
+    }
+
+    public startCapture(): void {
+        console.log('[SignalProcessor] Starting capture with clean state');
+        // For safety, call the regular reset method too
+        this.reset();
+        // Start capturing signals
+        this.isCapturing = true;
+    }
+
+    public stopCapture(): void {
+        console.log('[SignalProcessor] Stopping capture');
+
+        // Set capturing flag to false first
+        this.isCapturing = false;
+
+        // Don't reset buffers - this keeps data available for export
+        console.log('[SignalProcessor] Capture stopped, data preserved for export');
+    }
+
+
+    // Check capture state
+    isActive(): boolean {
+        return this.isCapturing;
+    }    
+
+    // Method to return empty results when not capturing
+    private getEmptyResults(): {
+        bvp: SignalMetrics,
+        resp: SignalMetrics,
+        displayData: {
+            bvp: number[],
+            resp: number[],
+            filteredBvp: number[],
+            filteredResp: number[]
+        }
+    } {
+        const emptyMetrics = {
+            rate: 0,
+            quality: {
+                snr: 0,
+                signalStrength: 0,
+                artifactRatio: 1,
+                quality: 'poor' as const
+            }
+        };
+
+        return {
+            bvp: emptyMetrics,
+            resp: emptyMetrics,
+            displayData: {
+                bvp: [],
+                resp: [],
+                filteredBvp: [],
+                filteredResp: []
+            }
         };
     }
 
@@ -84,28 +128,24 @@ export class SignalProcessor {
             filteredResp: number[]
         }
     } {
-        // Update buffers with cleaned signals
-        this.updateBuffer(this.bvpBuffer, bvpSignal);
-        this.updateBuffer(this.respBuffer, respSignal);
+        if (!this.isCapturing) {
+            console.log('[SignalProcessor] Skipping signal processing because capture is inactive');
+            return this.getEmptyResults();
+        }
+
+        // Update buffers with new signals
+        this.updateBuffer(this.bvpBuffer, bvpSignal, this.BVP_MA_WINDOW);
+        this.updateBuffer(this.respBuffer, respSignal, this.RESP_MA_WINDOW);
         this.timestamps.push(timestamp);
 
         // Maintain buffer size
         this.maintainBufferSize();
 
-        // Process signals with enhanced metrics
-        const bvpMetrics = this.processSignal(
-            this.bvpBuffer,
-            'bvp',
-            timestamp
-        );
+        // Process signals to get metrics
+        const bvpMetrics = this.processSignal(this.bvpBuffer, 'bvp', timestamp);
+        const respMetrics = this.processSignal(this.respBuffer, 'resp', timestamp);
 
-        const respMetrics = this.processSignal(
-            this.respBuffer,
-            'resp',
-            timestamp
-        );
-
-        // Prepare display data with improved visualization
+        // Prepare display data
         const displayData = this.prepareDisplayData();
 
         return {
@@ -115,50 +155,75 @@ export class SignalProcessor {
         };
     }
 
-    private removeDC(signal: number[]): number[] {
-        if (signal.length === 0) return [];
+    private updateBuffer(buffer: SignalBuffer, newSignal: number[], windowSize: number): void {
+        if (!this.isCapturing) {
+            return;
+        }
+        if (newSignal.length === 0) return;
 
-        // Calculate the mean (DC component)
-        const mean = signal.reduce((sum, value) => sum + value, 0) / signal.length;
-
-        // Subtract the mean from each sample
-        return signal.map(value => value - mean);
-    }
-
-    private updateBuffer(buffer: SignalBuffer, newSignal: number[]): void {
         // Add new signals to raw buffer
         buffer.raw.push(...newSignal);
 
-        // Remove DC component before filtering
-        const dcRemovedNew = this.removeDC(newSignal);
+        // Process the most recent segment of data
+        const segmentSize = this.SEGMENT_SIZE * this.fps; // seconds
+        const startIdx = Math.max(0, buffer.raw.length - segmentSize);
+        const segment = buffer.raw.slice(startIdx);
 
-        // Filter only the new chunk
-        const filteredNew = buffer === this.bvpBuffer
-            ? this.bvpFilter.processSignal(dcRemovedNew)
-            : this.respFilter.processSignal(dcRemovedNew);
+        // Debug segment statistics
+        const segmentType = buffer === this.bvpBuffer ? "BVP" : "RESP";
+        console.log(`${segmentType} segment stats: length=${segment.length}, min=${Math.min(...segment)}, max=${Math.max(...segment)}`);
 
-        // Append new filtered data
-        buffer.filtered.push(...filteredNew);
+        // Remove DC component
+        const dcRemoved = SignalAnalyzer.removeDC(segment);
 
-        // Normalize filtered signal
-        buffer.normalized = this.normalizePhysiologicalSignal(buffer.filtered, buffer === this.bvpBuffer);
+        // Apply moving average filter
+        const filtered = SignalAnalyzer.applyMovingAverage(dcRemoved, windowSize);
+
+        // Add validation to prevent NaN values
+        const validatedFiltered = filtered.map(val => isFinite(val) ? val : 0);
+
+        // Calculate how many new samples we're adding
+        const existingFiltered = buffer.filtered.length;
+        const rawLength = buffer.raw.length;
+        const newSamplesCount = Math.min(newSignal.length, validatedFiltered.length);
+
+        // Add only new samples to filtered buffer
+        if (existingFiltered > 0) {
+            const newFiltered = validatedFiltered.slice(validatedFiltered.length - newSamplesCount);
+            buffer.filtered.push(...newFiltered);
+        } else {
+            buffer.filtered.push(...validatedFiltered);
+        }
+
+        // Ensure filtered buffer doesn't grow larger than raw buffer
+        if (buffer.filtered.length > rawLength) {
+            buffer.filtered = buffer.filtered.slice(-rawLength);
+        }
+
+        // Normalize the filtered buffer
+        buffer.normalized = this.normalizeSignal(buffer.filtered);
     }
 
-    // Improved normalization specifically for physiological signals
-    private normalizePhysiologicalSignal(signal: number[], isBVP: boolean): number[] {
+    private normalizeSignal(signal: number[]): number[] {
         if (signal.length === 0) return [];
 
         const validSignal = signal.filter(val => isFinite(val) && !isNaN(val));
         if (validSignal.length === 0) return signal.map(() => 0);
 
-        const min = Math.min(...validSignal);
-        const max = Math.max(...validSignal);
-        const range = max - min;
+        // Use median and IQR for robust normalization
+        const sorted = [...validSignal].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
 
-        if (range === 0) return signal.map(() => 0);
+        const q1Index = Math.floor(sorted.length * 0.25);
+        const q3Index = Math.floor(sorted.length * 0.75);
+        const iqr = sorted[q3Index] - sorted[q1Index] || 1; // Avoid division by zero
 
-        // Normalize to [-1, 1] range
-        return signal.map(val => (2 * ((val - min) / range) - 1));
+        // Z-score normalization with outlier clamping
+        return signal.map(val => {
+            if (!isFinite(val) || isNaN(val)) return 0;
+            const normalized = (val - median) / iqr;
+            return Math.max(-3, Math.min(3, normalized)); // Clamp extreme values
+        });
     }
 
     private maintainBufferSize(): void {
@@ -182,13 +247,22 @@ export class SignalProcessor {
     }
 
     private processSignal(buffer: SignalBuffer, type: 'bvp' | 'resp', timestamp: string): SignalMetrics {
-        // Get analysis window with appropriate length for signal type
+        // First check - exit with default values if capture is inactive
+        if (!this.isCapturing) {
+            return {
+                rate: type === 'bvp' ? 75 : 15, // Default values
+                quality: { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 }
+            };
+        }
+        // Get analysis window with appropriate length
         const windowLengthSec = type === 'bvp' ? this.ANALYSIS_WINDOW : this.RESP_ANALYSIS_WINDOW;
         const windowSize = Math.min(windowLengthSec * this.fps, buffer.filtered.length);
         const analysisWindow = buffer.filtered.slice(-windowSize);
 
         // Check if we have enough data
-        if (analysisWindow.length < this.fps * 3) { // Need at least 3 seconds
+        const minRequired = this.fps * this.ANALYSIS_WINDOW; // Need at least this.ANALYSIS_WINDOW seconds
+        if (analysisWindow.length < minRequired) {
+            console.log(`${type}: Insufficient data for analysis (${analysisWindow.length}/${minRequired} samples)`);
             return {
                 rate: type === 'bvp' ? 75 : 15, // Default values
                 quality: { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 }
@@ -196,75 +270,75 @@ export class SignalProcessor {
         }
 
         try {
-            // Apply Hanning window for better spectral estimation
-            const windowedSignal = this.applyHanningWindow(analysisWindow);
-            
-            // Calculate spectrum using windowed FFT
-            const spectrum = this.calculateSpectrum(windowedSignal, this.fps);
-            
-            // Find dominant frequency in physiological range
-            const freqRange = type === 'bvp' 
-                ? { min: 0.60, max: 3.3 }  // 45-180 BPM
-                : { min: 0.1, max: 0.5 };  // 6-30 breaths/min
-            
-            const dominantFreq = this.findDominantFrequency(spectrum, freqRange);
-            
-            // Convert frequency to rate (BPM or breaths/min)
-            let rate = dominantFreq * 60;
-            
-            // Apply temporal smoothing with rate history
-            const rateHistory = type === 'bvp' ? this.bvpRateHistory : this.respRateHistory;
-            
-            if (isFinite(rate) && rate > 0) {
-                // Add to history if it's a valid rate
-                rateHistory.push(rate);
-                
-                // Keep reasonable history size
+            // Use SignalAnalyzer to process the signal
+            const signalType = type === 'bvp' ? 'heart' : 'resp';
+
+            const metrics = SignalAnalyzer.analyzeSignal(
+                analysisWindow,
+                this.fps,
+                signalType
+            );
+
+            // Apply rate smoothing
+            let rateHistory = type === 'bvp' ? this.bvpRateHistory : this.respRateHistory;
+
+            // Only use non-default rates for smoothing
+            const isDefaultRate = (type === 'bvp' && metrics.rate === 75) ||
+                (type === 'resp' && metrics.rate === 15);
+
+            if (!isDefaultRate) {
+                // Apply quality weighting
+                const qualityWeight = this.getQualityWeight(metrics.quality.quality);
+
+                // Add the new rate with its quality weight
+                rateHistory.push({
+                    rate: metrics.rate,
+                    weight: qualityWeight
+                });
+
+                // Keep history limited
                 if (rateHistory.length > this.RATE_SMOOTHING_WINDOW) {
-                    rateHistory.shift();
+                    rateHistory = rateHistory.slice(-this.RATE_SMOOTHING_WINDOW);
                 }
-                
-                // Use median filtering for stability if we have enough history
-                if (rateHistory.length >= 3) {
-                    const sortedRates = [...rateHistory].sort((a, b) => a - b);
-                    rate = sortedRates[Math.floor(sortedRates.length / 2)];
+
+                // Update the history array reference
+                if (type === 'bvp') {
+                    this.bvpRateHistory = rateHistory;
+                } else {
+                    this.respRateHistory = rateHistory;
                 }
-            } else if (rateHistory.length > 0) {
-                // Use previous rate if current calculation is invalid
-                rate = rateHistory[rateHistory.length - 1];
-            }
-            
-            // Ensure rate is within physiological range
-            if (type === 'bvp') {
-                rate = Math.max(36, Math.min(198, rate));
+
+                // Apply weighted average smoothing
+                const totalWeight = rateHistory.reduce((sum, item) => sum + item.weight, 0);
+                let smoothedRate = metrics.rate; // Default to current rate
+
+                if (totalWeight > 0 && rateHistory.length > 0) {
+                    smoothedRate = rateHistory.reduce((sum, item) => sum + item.rate * item.weight, 0) / totalWeight;
+                }
+
+                // Create smoothed metrics
+                const smoothedMetrics: SignalMetrics = {
+                    rate: smoothedRate,
+                    quality: metrics.quality
+                };
+
+                // Store rate in buffer
+                buffer.rates.push({
+                    timestamp,
+                    value: smoothedMetrics.rate,
+                    snr: metrics.quality.snr,
+                    quality: metrics.quality.quality
+                });
+
+                // Trim buffer if needed
+                if (buffer.rates.length > this.MAX_BUFFER) {
+                    buffer.rates = buffer.rates.slice(-this.MAX_BUFFER);
+                }
+
+                return smoothedMetrics;
             } else {
-                rate = Math.max(6, Math.min(30, rate));
+                return metrics; // Return the default metrics
             }
-            
-            // Store rate in buffer
-            buffer.rates.push({
-                timestamp,
-                value: rate,
-                snr: 0, // Will be updated below
-                quality: 'poor' // Will be updated below
-            });
-            
-            // Trim buffer if needed
-            if (buffer.rates.length > this.MAX_BUFFER) {
-                buffer.rates = buffer.rates.slice(-this.MAX_BUFFER);
-            }
-            
-            // Calculate signal quality
-            const quality = this.calculateSignalQuality(spectrum, dominantFreq, freqRange, type);
-            
-            // Update the last rate entry with quality metrics
-            if (buffer.rates.length > 0) {
-                const lastIdx = buffer.rates.length - 1;
-                buffer.rates[lastIdx].snr = quality.snr;
-                buffer.rates[lastIdx].quality = quality.quality;
-            }
-            
-            return { rate, quality };
         } catch (error) {
             console.error(`Error calculating ${type} metrics:`, error);
             return {
@@ -274,210 +348,76 @@ export class SignalProcessor {
         }
     }
 
-    // Apply Hanning window for better spectral estimation
-    private applyHanningWindow(signal: number[]): number[] {
-        return signal.map((value, index) => {
-            const term = 2 * Math.PI * index / (signal.length - 1);
-            const window = 0.5 * (1 - Math.cos(term)); // Hanning window
-            return value * window;
-        });
-    }
-
-    private calculateSpectrum(signal: number[], fs: number): { frequencies: number[], magnitudes: number[] } {
-        const N = signal.length;
-        const frequencies: number[] = [];
-        const magnitudes: number[] = [];
-
-        // Zero-padding for better frequency resolution
-        const paddedLength = Math.pow(2, Math.ceil(Math.log2(N)));
-        const paddedSignal = [...signal];
-        paddedSignal.length = paddedLength;
-        paddedSignal.fill(0, N);
-
-        // Calculate DFT
-        for (let k = 0; k < paddedLength / 2; k++) {
-            let real = 0;
-            let imag = 0;
-            for (let n = 0; n < paddedLength; n++) {
-                const angle = 2 * Math.PI * k * n / paddedLength;
-                real += paddedSignal[n] * Math.cos(angle);
-                imag -= paddedSignal[n] * Math.sin(angle);
-            }
-
-            const magnitude = Math.sqrt(real * real + imag * imag) / paddedLength;
-            const frequency = k * fs / paddedLength;
-
-            frequencies.push(frequency);
-            magnitudes.push(magnitude);
+    private getQualityWeight(quality: 'excellent' | 'good' | 'moderate' | 'poor'): number {
+        switch (quality) {
+            case 'excellent': return 1.0;
+            case 'good': return 0.8;
+            case 'moderate': return 0.5;
+            case 'poor': return 0.2;
+            default: return 0.5;
         }
-
-        return { frequencies, magnitudes };
-    }
-
-    private findDominantFrequency(spectrum: { frequencies: number[], magnitudes: number[] }, range: { min: number, max: number }): number {
-        let maxMagnitude = 0;
-        let dominantFreq = 0;
-        let secondMaxMagnitude = 0;
-        let secondDominantFreq = 0;
-
-        // Find the two strongest peaks in the frequency range
-        for (let i = 0; i < spectrum.frequencies.length; i++) {
-            const freq = spectrum.frequencies[i];
-            if (freq >= range.min && freq <= range.max) {
-                // Check if it's a local peak
-                if (i > 0 && i < spectrum.frequencies.length - 1 &&
-                    spectrum.magnitudes[i] > spectrum.magnitudes[i - 1] &&
-                    spectrum.magnitudes[i] > spectrum.magnitudes[i + 1]) {
-
-                    if (spectrum.magnitudes[i] > maxMagnitude) {
-                        // Move current max to second place
-                        secondMaxMagnitude = maxMagnitude;
-                        secondDominantFreq = dominantFreq;
-                        // Set new max
-                        maxMagnitude = spectrum.magnitudes[i];
-                        dominantFreq = freq;
-                    } else if (spectrum.magnitudes[i] > secondMaxMagnitude) {
-                        secondMaxMagnitude = spectrum.magnitudes[i];
-                        secondDominantFreq = freq;
-                    }
-                }
-            }
-        }
-
-        // If second peak is harmonically related to first peak and significant,
-        // it might be more accurate (e.g., respiratory sinus arrhythmia)
-        if (secondMaxMagnitude > 0.7 * maxMagnitude) {
-            const harmonicRatio = Math.max(dominantFreq, secondDominantFreq) /
-                Math.min(dominantFreq, secondDominantFreq);
-
-            // If close to harmonic ratio of 2, prefer the lower frequency
-            if (harmonicRatio > 1.8 && harmonicRatio < 2.2) {
-                return Math.min(dominantFreq, secondDominantFreq);
-            }
-        }
-
-        return dominantFreq;
-    }
-
-    private calculateSignalQuality(
-        spectrum: { frequencies: number[], magnitudes: number[] },
-        dominantFreq: number,
-        range: { min: number, max: number },
-        type: 'bvp' | 'resp'
-    ): { quality: 'excellent' | 'good' | 'moderate' | 'poor', snr: number, artifactRatio: number, signalStrength: number } {
-        // Find index of dominant frequency
-        const dominantIdx = spectrum.frequencies.findIndex(f => Math.abs(f - dominantFreq) < 0.01);
-        if (dominantIdx === -1) {
-            return { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 };
-        }
-
-        // Calculate signal power in the physiological range
-        let signalPower = 0;
-        let totalPower = 0;
-        let noiseAroundPeak = 0;
-        let peakPower = spectrum.magnitudes[dominantIdx] ** 2;
-
-        // Width of peak region (Hz)
-        const peakWidth = type === 'bvp' ? 0.15 : 0.05;
-
-        // Consider frequencies in all ranges
-        for (let i = 0; i < spectrum.frequencies.length; i++) {
-            const freq = spectrum.frequencies[i];
-            const power = spectrum.magnitudes[i] ** 2;
-
-            // Total power across all frequencies
-            totalPower += power;
-
-            // Power within physiological range
-            if (freq >= range.min && freq <= range.max) {
-                signalPower += power;
-
-                // Calculate noise around peak (excluding the peak region)
-                if (Math.abs(freq - dominantFreq) > peakWidth &&
-                    Math.abs(freq - dominantFreq) < peakWidth * 3) {
-                    noiseAroundPeak += power;
-                }
-            }
-        }
-
-        // Calculate improved SNR: peak power to noise around peak
-        const snr = noiseAroundPeak > 0 ? 10 * Math.log10(peakPower / noiseAroundPeak) : 0;
-
-        // Calculate artifact ratio: power outside physiological range to total power
-        const artifactPower = totalPower - signalPower;
-        const artifactRatio = totalPower > 0 ? artifactPower / totalPower : 1.0;
-
-        // Calculate signal strength (relative power of the dominant frequency)
-        const signalStrength = totalPower > 0 ? peakPower / totalPower : 0;
-
-        // Calculate harmonic ratio for additional quality assessment
-        let harmonicRatio = 0;
-        const harmonicFreq = dominantFreq * 2;
-        const harmonicIdx = spectrum.frequencies.findIndex(
-            f => Math.abs(f - harmonicFreq) < 0.1
-        );
-
-        if (harmonicIdx !== -1) {
-            const harmonicPower = spectrum.magnitudes[harmonicIdx] ** 2;
-            harmonicRatio = harmonicPower > 0 ? peakPower / harmonicPower : 0;
-        }
-
-        // Improved quality determination based on multiple factors
-        let quality: 'excellent' | 'good' | 'moderate' | 'poor';
-
-        // For BVP, good harmonic content is important
-        if (type === 'bvp') {
-            if (snr > 12 && artifactRatio < 0.2 && harmonicRatio > 2) {
-                quality = 'excellent';
-            } else if (snr > 8 && artifactRatio < 0.3 && harmonicRatio > 1) {
-                quality = 'good';
-            } else if (snr > 5 && artifactRatio < 0.5) {
-                quality = 'moderate';
-            } else {
-                quality = 'poor';
-            }
-        } else {
-            // For respiratory signal, stability is more important than harmonics
-            if (snr > 10 && artifactRatio < 0.3 && signalStrength > 0.4) {
-                quality = 'excellent';
-            } else if (snr > 6 && artifactRatio < 0.4 && signalStrength > 0.3) {
-                quality = 'good';
-            } else if (snr > 3 && artifactRatio < 0.6) {
-                quality = 'moderate';
-            } else {
-                quality = 'poor';
-            }
-        }
-
-        return { quality, snr, artifactRatio, signalStrength };
     }
 
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
+        // Return empty arrays if not capturing
+        if (!this.isCapturing) {
+            return {
+                bvp: [],
+                resp: [],
+                filteredBvp: [],
+                filteredResp: []
+            };
+        }
         const displaySamples = this.DISPLAY_WINDOW * this.fps;
 
-        const normBVP = this.bvpBuffer.filtered.slice(-displaySamples);
-        const normResp = this.respBuffer.filtered.slice(-displaySamples);
+        // Get the display window of data
+        const bvpRawDisplay = this.bvpBuffer.raw.slice(-displaySamples);
+        const respRawDisplay = this.respBuffer.raw.slice(-displaySamples);
+        const bvpFilteredDisplay = this.bvpBuffer.normalized.slice(-displaySamples);
+        const respFilteredDisplay = this.respBuffer.normalized.slice(-displaySamples);
 
-        // apply min-max normalization for BVP and Resp
-        const minBVP = Math.min(...normBVP);
-        const maxBVP = Math.max(...normBVP);
-        const minResp = Math.min(...normResp);
-        const maxResp = Math.max(...normResp);
-        const rangeBVP = maxBVP - minBVP;
-        const rangeResp = maxResp - minResp;
-        const normalizedBVP = normBVP.map(val => (val - minBVP) / rangeBVP);
-        const normalizedResp = normResp.map(val => (val - minResp) / rangeResp);
+        // Additional smoothing for display only
+        const displayBvpWindow = Math.round(this.fps * 0.15); // 150ms for display smoothing (BVP)
+        const displayRespWindow = Math.round(this.fps * 0.5); // 500ms for display smoothing (Resp)
+
+        const smoothedBvp = this.applyDisplaySmoothing(bvpFilteredDisplay, displayBvpWindow);
+        const smoothedResp = this.applyDisplaySmoothing(respFilteredDisplay, displayRespWindow);
+
+        // Normalize to [0, 1] range for display
+        const normalizedBVP = this.normalizeForDisplay(smoothedBvp);
+        const normalizedResp = this.normalizeForDisplay(smoothedResp);
 
         return {
-            bvp: this.bvpBuffer.raw.slice(-displaySamples),
-            resp: this.respBuffer.raw.slice(-displaySamples),
+            bvp: bvpRawDisplay,
+            resp: respRawDisplay,
             filteredBvp: normalizedBVP,
             filteredResp: normalizedResp
         };
     }
 
+    private normalizeForDisplay(signal: number[]): number[] {
+        if (signal.length === 0) return [];
+
+        const validSignal = signal.filter(val => isFinite(val) && !isNaN(val));
+        if (validSignal.length === 0) return signal.map(() => 0);
+
+        const min = Math.min(...validSignal);
+        const max = Math.max(...validSignal);
+        const range = max - min;
+
+        if (range === 0) return signal.map(() => 0.5);
+
+        // Normalize to [0, 1] range for display
+        return signal.map(val => (val - min) / range);
+    }
+
+    private applyDisplaySmoothing(signal: number[], windowSize: number): number[] {
+        return SignalAnalyzer.applyMovingAverage(signal, windowSize);
+    }
+
     getExportData(): ExportData {
-        return {
+        // Create a lightweight copy of only the necessary data
+        const exportData: ExportData = {
             metadata: {
                 samplingRate: this.fps,
                 startTime: this.timestamps[0] || new Date().toISOString(),
@@ -486,38 +426,39 @@ export class SignalProcessor {
             },
             signals: {
                 bvp: {
-                    raw: this.bvpBuffer.raw,
-                    filtered: this.bvpBuffer.filtered
+                    raw: [...this.bvpBuffer.raw],
+                    filtered: [...this.bvpBuffer.filtered]
                 },
                 resp: {
-                    raw: this.respBuffer.raw,
-                    filtered: this.respBuffer.filtered
+                    raw: [...this.respBuffer.raw],
+                    filtered: [...this.respBuffer.filtered]
                 }
             },
             rates: {
-                heart: this.bvpBuffer.rates.map(rate => ({
-                    timestamp: rate.timestamp,
-                    value: rate.value,
-                    snr: rate.snr,
-                    quality: rate.quality
+                heart: this.bvpBuffer.rates.map(({ timestamp, value, snr, quality }) => ({
+                    timestamp,
+                    value,
+                    snr,
+                    quality
                 })),
-                respiratory: this.respBuffer.rates.map(rate => ({
-                    timestamp: rate.timestamp,
-                    value: rate.value,
-                    snr: rate.snr,
-                    quality: rate.quality
+                respiratory: this.respBuffer.rates.map(({ timestamp, value, snr, quality }) => ({
+                    timestamp,
+                    value,
+                    snr,
+                    quality
                 }))
             },
-            timestamps: this.timestamps
+            timestamps: [...this.timestamps]
         };
-    }
 
+        return exportData;
+    }
+    
     reset(): void {
+        // Reset all buffers and state regardless of capture status
         this.bvpBuffer = this.createBuffer();
         this.respBuffer = this.createBuffer();
         this.timestamps = [];
-        this.bvpFilter.reset();
-        this.respFilter.reset();
         this.bvpRateHistory = [];
         this.respRateHistory = [];
     }

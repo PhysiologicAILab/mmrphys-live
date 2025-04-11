@@ -31,7 +31,7 @@ interface InferenceResult {
 
 class InferenceWorker {
     private session: ort.InferenceSession | null = null;
-    private signalProcessor: SignalProcessor | null = null;
+    public signalProcessor: SignalProcessor | null = null;
     private isInitialized = false;
     private inputName: string = '';
     private MIN_FRAMES_REQUIRED = 181; // Will be updated from config
@@ -47,6 +47,10 @@ class InferenceWorker {
         try {
             // Configure environment
             await this.configureOrtEnvironment();
+
+            // Initialize the signal processor
+            console.log('Initializing inference worker and signal processor');
+            this.signalProcessor = new SignalProcessor();
 
             // Load model configuration using ConfigService
             console.log('[InferenceWorker] Loading model configuration via ConfigService...');
@@ -227,6 +231,11 @@ class InferenceWorker {
             throw new Error('Worker not initialized');
         }
 
+        // Check if capture is still active
+        if (!this.signalProcessor.isActive()) {
+            return null;
+        }
+
         // Prepare input tensor
         const inputTensor = this.preprocessFrames(frameBuffer);
         const feeds = { [this.inputName]: inputTensor };
@@ -262,17 +271,36 @@ class InferenceWorker {
     }
 
     async runInference(frameBuffer: ImageData[]): Promise<void> {
-        if (!this.isInitialized) {
-            throw new Error('Worker not initialized');
+        // Check if signal processor is initialized and capture is active
+        if (!this.signalProcessor || !this.isInitialized) {
+            throw new Error('Signal processor not initialized or not ready');
+        }
+
+        // Add this check to prevent processing when capture is stopped
+        if (!this.signalProcessor.isActive()) {
+            console.log('[InferenceWorker] Skipping inference because capture is inactive');
+            return;
         }
 
         try {
+            // Add an extra check before any processing begins
+            if (!this.signalProcessor.isActive()) {
+                return;
+            }
+
             const processingStart = performance.now();
 
             // Process frames and get signals
             const processedSignals = await this.processFrames(frameBuffer);
 
-            if (processedSignals) {
+            // Check again before sending results
+            if (!processedSignals || !this.signalProcessor.isActive()) {
+                console.log('[InferenceWorker] Discarding results because capture was stopped');
+                return;
+            }
+
+            // Additional check to make sure we're still capturing before sending results
+            if (processedSignals && this.signalProcessor.isActive()) {
                 // Manually construct performance metrics if method doesn't exist
                 const performanceMetrics: PerformanceMetrics = {
                     averageUpdateTime: performance.now() - processingStart,
@@ -280,27 +308,24 @@ class InferenceWorker {
                     bufferUtilization: 0
                 };
 
-                // Convert ProcessedSignals to InferenceResult
-                const inferenceResult: InferenceResult = {
-                    bvp: {
-                        raw: processedSignals.bvp.raw,
-                        filtered: processedSignals.bvp.filtered,
-                        metrics: processedSignals.bvp.metrics
-                    },
-                    resp: {
-                        raw: processedSignals.resp.raw,
-                        filtered: processedSignals.resp.filtered,
-                        metrics: processedSignals.resp.metrics
-                    },
-                    timestamp: processedSignals.timestamp,
-                    performanceMetrics
-                };
-
                 // Send results to main thread
                 const message: WorkerMessage = {
                     type: 'inference',
                     status: 'success',
-                    results: inferenceResult
+                    results: {
+                        bvp: {
+                            metrics: processedSignals.bvp.metrics,
+                            raw: processedSignals.bvp.raw,
+                            filtered: processedSignals.bvp.filtered
+                        },
+                        resp: {
+                            metrics: processedSignals.resp.metrics,
+                            raw: processedSignals.resp.raw,
+                            filtered: processedSignals.resp.filtered
+                        },
+                        performanceMetrics: performanceMetrics,
+                        timestamp: processedSignals.timestamp,
+                    }
                 };
 
                 self.postMessage(message);
@@ -321,17 +346,21 @@ class InferenceWorker {
         }
 
         try {
-            // Use a more robust export method
-            const exportedData = JSON.stringify(
-                this.signalProcessor.getExportData(),
-                null,
-                2 // Pretty print
-            );
+            // Get export data before any cleanup
+            const data = this.signalProcessor.getExportData();
+
+            // Validate data
+            if (!data.signals.bvp.raw.length && !data.signals.resp.raw.length) {
+                throw new Error('No data available for export');
+            }
+
+            // Create a structured clone to ensure clean data transfer
+            const exportedData = JSON.stringify(data);
 
             self.postMessage({
                 type: 'export',
                 status: 'success',
-                data: exportedData // Ensure string export
+                data: exportedData
             });
         } catch (error) {
             console.error('Export error:', error);
@@ -341,6 +370,30 @@ class InferenceWorker {
                 error: error instanceof Error ? error.message : String(error)
             });
         }
+    }
+
+    startCapture(): void {
+        if (!this.signalProcessor) {
+            throw new Error('Signal processor not initialized');
+        }
+        console.log('[InferenceWorker] Starting signal capture');
+        this.signalProcessor.startCapture();
+        // Add debug to verify capture state
+        console.log('[InferenceWorker] Capture active:', this.signalProcessor.isActive());
+    }
+
+    stopCapture(): void {
+        if (!this.signalProcessor) {
+            return;
+        }
+
+        // Only stop the capture, don't reset
+        this.signalProcessor.stopCapture();
+
+        // Block new inference requests immediately
+        this.isInitialized = false;
+
+        console.log('[InferenceWorker] Stopped capture. Data preserved for export.');
     }
 
     reset(): void {
@@ -368,13 +421,70 @@ class InferenceWorker {
 // Create worker instance
 const worker = new InferenceWorker();
 
+// Add a global flag at the top of the file, outside the class
+let isShuttingDown = false;
+
 // Message handler
 self.onmessage = async (e: MessageEvent) => {
     try {
+        // Special handling for stopCapture - process this immediately and block everything else
+        if (e.data.type === 'stopCapture') {
+            console.log('[InferenceWorker] Received stopCapture command, blocking all processing');
+            isShuttingDown = true; // Set the global flag
+            worker.stopCapture();
+            self.postMessage({ type: 'stopCapture', status: 'success' });
+            return;
+        }
+
+        // Immediately abort any processing if we're shutting down
+        if (isShuttingDown && e.data.type !== 'reset') {
+            console.log(`[InferenceWorker] Ignoring ${e.data.type} message during shutdown`);
+            return;
+        }
+
+        // If we get a reset command, clear the shutdown state
+        if (e.data.type === 'reset') {
+            isShuttingDown = false;
+            worker.reset();
+            self.postMessage({ type: 'reset', status: 'success' });
+            return;
+        }
+
+        // For inference requests, check if we're supposed to be capturing
+        if (e.data.type === 'inference' &&
+            (isShuttingDown || !worker.signalProcessor || !worker.signalProcessor.isActive())) {
+            console.log('[InferenceWorker] Ignoring inference request - capture is inactive');
+            return;
+        }
+
         switch (e.data.type) {
             case 'init':
                 await worker.initialize();
                 break;
+
+            case 'startCapture':
+                worker.startCapture();
+                self.postMessage({ type: 'startCapture', status: 'success' });
+                break;
+            
+            case 'stopCapture':
+                try {
+                    // This flag should immediately block new inference requests
+                    isShuttingDown = true;
+
+                    // Then stop the capture
+                    worker.stopCapture();
+
+                    // Respond immediately to confirm stop was received
+                    self.postMessage({ type: 'stopCapture', status: 'success' });
+                } catch (error) {
+                    self.postMessage({
+                        type: 'stopCapture',
+                        status: 'error',
+                        message: error instanceof Error ? error.message : String(error)
+                    });
+                }
+                return;
 
             case 'inference':
                 if (!e.data.frameBuffer) {
@@ -384,8 +494,29 @@ self.onmessage = async (e: MessageEvent) => {
                 break;
 
             case 'export':
-                await worker.exportData();
-                break;
+                try {
+                    // Even if capture is stopped, we can still export data
+                    if (!worker.signalProcessor) {
+                        throw new Error('Signal processor not initialized');
+                    }
+
+                    // Get export data from signal processor
+                    const exportData = worker.signalProcessor.getExportData();
+
+                    // Send it back immediately
+                    self.postMessage({
+                        type: 'exportData',
+                        status: 'success',
+                        data: exportData
+                    });
+                } catch (error) {
+                    self.postMessage({
+                        type: 'exportData',
+                        status: 'error',
+                        error: error instanceof Error ? error.message : 'Failed to export data'
+                    });
+                }
+                return;
 
             case 'reset':
                 worker.reset();

@@ -14,6 +14,7 @@ const App: React.FC = () => {
     const [isInitialized, setIsInitialized] = useState(false);
     const [isCapturing, setIsCapturing] = useState(false);
     const [bufferProgress, setBufferProgress] = useState(0);
+    const [exporting, setExporting] = useState(false);
     const [statusMessage, setStatusMessage] = useState<StatusMessageType>({
         message: 'Initializing system...',
         type: 'info'
@@ -231,8 +232,28 @@ const App: React.FC = () => {
             clearInterval(progressIntervalRef.current);
         }
 
+        // Force local monitoring state regardless of React state
+        let isMonitoringActive = true;
+
+        // Implement capture state check directly through videoProcessor instead of React state
+        const isCurrentlyCapturing = () => {
+            return videoProcessorRef.current?.isCapturing() || false;
+        };
+
         progressIntervalRef.current = window.setInterval(() => {
-            if (!videoProcessorRef.current || !inferenceWorkerRef.current) return;
+            // Only check if refs are invalid
+            if (!videoProcessorRef.current || !inferenceWorkerRef.current) {
+                return;
+            }
+
+            // Use direct check of capture state instead of React state
+            if (!isCurrentlyCapturing()) {
+                if (isMonitoringActive) {
+                    console.log('Stopping monitoring because capture is no longer active');
+                    isMonitoringActive = false;
+                }
+                return;
+            }
 
             const progress = videoProcessorRef.current.getBufferUsagePercentage();
             setBufferProgress(progress);
@@ -242,7 +263,8 @@ const App: React.FC = () => {
                 const frameBuffer = videoProcessorRef.current.getFrameBuffer();
                 inferenceWorkerRef.current.postMessage({
                     type: 'inference',
-                    frameBuffer
+                    frameBuffer,
+                    timestamp: window.performance.now()
                 });
             }
         }, 100);
@@ -258,8 +280,18 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
-            // Reset metrics buffers before starting new capture
+            // Clear old data before starting new capture
+            inferenceWorkerRef.current?.postMessage({
+                type: 'reset'
+            });
+
+            // Reset metrics buffers
             resetData();
+
+            // Start new capture
+            inferenceWorkerRef.current?.postMessage({
+                type: 'startCapture'
+            });
 
             await videoProcessorRef.current.startCapture();
             setIsCapturing(true);
@@ -276,54 +308,122 @@ const App: React.FC = () => {
                 type: 'error'
             });
         }
-    }, [startMonitoring, resetData]);  // Add resetData to dependencies
+    }, [startMonitoring, resetData]);
 
     // Stop capture handler
     const handleStopCapture = useCallback(async () => {
         if (!videoProcessorRef.current) return;
 
         try {
-            await videoProcessorRef.current.stopCapture();
+            // Set capturing state to false immediately
             setIsCapturing(false);
-            setBufferProgress(0);
 
+            // Stop the monitoring interval first
             if (progressIntervalRef.current) {
                 clearInterval(progressIntervalRef.current);
                 progressIntervalRef.current = null;
             }
 
-            // Reset data after stopping capture
-            resetData();
+            // Stop inference worker before video capture to prevent race conditions
+            inferenceWorkerRef.current?.postMessage({
+                type: 'stopCapture'
+            });
+
+            // Wait for worker to acknowledge stop
+            await new Promise(resolve => {
+                const handleMessage = (e: MessageEvent<{ type: string; status: string }>) => {
+                    if (e.data.type === 'stopCapture' && e.data.status === 'success') {
+                        self.removeEventListener('message', handleMessage);
+                        resolve(null);
+                    }
+                };
+                self.addEventListener('message', handleMessage);
+
+                // Timeout for safety
+                setTimeout(resolve, 1000);
+            });
+
+            // Finally stop video capture
+            await videoProcessorRef.current.stopCapture();
 
             setStatusMessage({
-                message: 'Capture stopped',
+                message: 'Capture stopped. Data preserved for export.',
                 type: 'info'
             });
         } catch (error) {
+            console.error('Error stopping capture:', error);
             setStatusMessage({
-                message: `Failed to stop capture: ${error instanceof Error ? error.message : 'Unknown error'
-                    }`,
+                message: `Failed to stop capture: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 type: 'error'
             });
         }
-    }, [resetData]);
+    }, []);
 
     // Export data handler
-    const handleExport = useCallback(() => {
-        try {
-            // Send export message to worker
-            inferenceWorkerRef.current?.postMessage({ type: 'export' });
+    const handleExport = useCallback(async () => {
+        if (!inferenceWorkerRef.current) return;
 
+        try {
+            setExporting(true);
             setStatusMessage({
-                message: 'Preparing export...',
+                message: 'Preparing data export...',
                 type: 'info'
             });
-        } catch (error) {
+
+            // Request the data from the worker
+            inferenceWorkerRef.current.postMessage({
+                type: 'exportData'
+            });
+
+            // Set up a listener for the export data response
+            const exportPromise = new Promise((resolve, reject) => {
+                const timeoutId = setTimeout(() => {
+                    reject(new Error('Export data request timed out'));
+                }, 10000); // 10 second timeout
+
+                const handleMessage = (e: MessageEvent) => {
+                    if (e.data.type === 'exportData') {
+                        clearTimeout(timeoutId);
+                        self.removeEventListener('message', handleMessage);
+
+                        if (e.data.status === 'success') {
+                            resolve(e.data.data);
+                        } else {
+                            reject(new Error(e.data.error || 'Failed to export data'));
+                        }
+                    }
+                };
+
+                self.addEventListener('message', handleMessage);
+            });
+
+            // Wait for the data
+            const exportData = await exportPromise;
+
+            // Generate and download the file
+            const dataStr = JSON.stringify(exportData, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+
+            const downloadLink = document.createElement('a');
+            downloadLink.href = url;
+            downloadLink.download = `vital-signs-${new Date().toISOString().slice(0, 19)}.json`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+
             setStatusMessage({
-                message: `Export failed: ${error instanceof Error ? error.message : 'Unknown error'
-                    }`,
+                message: 'Data exported successfully!',
+                type: 'success'
+            });
+        } catch (error) {
+            console.error('Export error:', error);
+            setStatusMessage({
+                message: `Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 type: 'error'
             });
+        } finally {
+            setExporting(false);
         }
     }, []);
 

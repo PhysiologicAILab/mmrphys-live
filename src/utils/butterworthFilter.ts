@@ -12,6 +12,7 @@ export class ButterworthFilter {
     private z: number[];  // delay line for filtering
     private prevInput: number[] = [];  // store previous inputs for median filtering
     private readonly MEDIAN_WINDOW_SIZE = 5;  // size of median filter window
+    private readonly OVERLAP_SIZE = 10; // samples to overlap between processing chunks
 
     constructor(coefficients: FilterCoefficients) {
         this.b = coefficients.b;
@@ -77,15 +78,41 @@ export class ButterworthFilter {
     }
 
     /**
-     * Process an entire signal
+     * Process new signal data while maintaining filter state
      */
     processSignal(signal: number[]): number[] {
-        // Apply DC removal first
-        const mean = signal.reduce((sum, val) => sum + val, 0) / signal.length;
-        const centered = signal.map(sample => sample - mean);
+        if (signal.length === 0) return [];
 
-        // Apply bandpass filter
-        return centered.map(sample => this.processSample(sample));
+        const output: number[] = new Array(signal.length);
+
+        // Process each sample while maintaining state
+        for (let i = 0; i < signal.length; i++) {
+            output[i] = this.processSample(signal[i]);
+        }
+
+        return output;
+    }
+
+    /**
+     * Process an entire signal with proper filter state reset
+     * Use this when processing a complete standalone signal
+     */
+    processEntireSignal(signal: number[]): number[] {
+        // Store current state
+        const savedZ = [...this.z];
+        const savedPrevInput = [...this.prevInput];
+
+        // Reset state for standalone processing
+        this.reset();
+
+        // Process signal
+        const result = this.processSignal(signal);
+
+        // Restore previous state for ongoing filtering
+        this.z = savedZ;
+        this.prevInput = savedPrevInput;
+
+        return result;
     }
 
     /**

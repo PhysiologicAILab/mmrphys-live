@@ -68,16 +68,6 @@ export class VideoProcessor {
         this.setupContexts();
     }
 
-    private async initializeFaceDetector(): Promise<void> {
-        try {
-            await this.faceDetector.initialize();
-            console.log('Face detector initialized successfully');
-        } catch (error) {
-            console.error('Face detector initialization failed:', error);
-            throw error;
-        }
-    }
-
     private createOptimizedCanvas(width: number, height: number): HTMLCanvasElement {
         const canvas = document.createElement('canvas');
         canvas.width = width;
