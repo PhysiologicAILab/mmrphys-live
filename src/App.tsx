@@ -6,7 +6,8 @@ import { useVitalSigns } from '@/hooks/useVitalSigns';
 import { VideoProcessor } from '@/utils/videoProcessor';
 import {
     StatusMessage as StatusMessageType,
-    VitalSigns as VitalSignsType
+    VitalSigns as VitalSignsType,
+    InferenceResult as InferenceResultType,
 } from '@/types';
 
 const App: React.FC = () => {
@@ -97,10 +98,10 @@ const App: React.FC = () => {
                         case 'init':
                             handleWorkerInitialization(e);
                             break;
-                        case 'inference':
+                        case 'inferenceResult':
                             handleInferenceResults(e);
                             break;
-                        case 'export':
+                        case 'exportData':
                             handleExportResults(e);
                             break;
                         case 'error':
@@ -139,42 +140,62 @@ const App: React.FC = () => {
     // Handler for worker initialization
     const handleWorkerInitialization = (event: MessageEvent) => {
         if (event.data.status === 'success') {
+            console.log('[App] Worker successfully initialized');
             setIsInitialized(true);
             setStatusMessage({
                 message: 'System ready',
                 type: 'success'
             });
         } else {
+            console.error('[App] Worker initialization failed:', event.data.error);
+            setIsInitialized(false);
             setStatusMessage({
-                message: `Initialization failed: ${event.data.error}`,
+                message: `Worker initialization failed: ${event.data.error}`,
                 type: 'error'
             });
+
+            // Retry initialization after a delay
+            setTimeout(() => {
+                console.log('[App] Retrying worker initialization...');
+                inferenceWorkerRef.current?.postMessage({ type: 'init' });
+            }, 3000);
         }
     };
 
     // Handler for inference results
     const handleInferenceResults = (event: MessageEvent) => {
         if (event.data.status === 'success') {
-            const results = event.data.results;
-            updateVitalSigns({
-                heartRate: results.bvp.metrics.rate,
-                respRate: results.resp.metrics.rate,
-                bvpSignal: results.bvp.raw,
-                respSignal: results.resp.raw,
-                bvpSNR: results.bvp.metrics.quality.snr,
-                respSNR: results.resp.metrics.quality.snr,
-                filteredBvpSignal: results.bvp.filtered,
-                filteredRespSignal: results.resp.filtered,
-                bvpQuality: results.bvp.metrics.quality.quality,
-                respQuality: results.resp.metrics.quality.quality,
-                bvpSignalStrength: results.bvp.metrics.quality.signalStrength || 0,
-                respSignalStrength: results.resp.metrics.quality.signalStrength || 0,
-                bvpArtifactRatio: results.bvp.metrics.quality.artifactRatio || 0,
-                respArtifactRatio: results.resp.metrics.quality.artifactRatio || 0
+            const inferenceResult: InferenceResultType = event.data;
+
+            console.log('[App] Received data from worker:', {
+                bvpLength: inferenceResult.bvp?.filtered?.length || 0,
+                respLength: inferenceResult.resp?.filtered?.length || 0,
+                isCapturing: isCapturing,
+                bufferProgress: bufferProgress,
             });
 
-            // Update performance metrics
-            updatePerformance(results.performanceMetrics);
+            // Update vital signs with the received data
+            updateVitalSigns({
+                heartRate: inferenceResult.bvp.metrics.rate,
+                respRate: inferenceResult.resp.metrics.rate,
+                bvpSignal: inferenceResult.bvp.raw,
+                respSignal: inferenceResult.resp.raw,
+                filteredBvpSignal: inferenceResult.bvp.filtered,
+                filteredRespSignal: inferenceResult.resp.filtered,
+                bvpSNR: inferenceResult.bvp.metrics.quality.snr,
+                respSNR: inferenceResult.resp.metrics.quality.snr,
+                bvpQuality: inferenceResult.bvp.metrics.quality.quality,
+                respQuality: inferenceResult.resp.metrics.quality.quality,
+                bvpSignalStrength: inferenceResult.bvp.metrics.quality.signalStrength || 0,
+                respSignalStrength: inferenceResult.resp.metrics.quality.signalStrength || 0,
+                bvpArtifactRatio: inferenceResult.bvp.metrics.quality.artifactRatio || 0,
+                respArtifactRatio: inferenceResult.resp.metrics.quality.artifactRatio || 0,
+            });
+
+            // Update performance metrics - still track inference time internally
+            if (event.data.performanceMetrics) {
+                updatePerformance(event.data.performanceMetrics);
+            }
         } else {
             setStatusMessage({
                 message: `Inference error: ${event.data.error}`,
@@ -230,6 +251,30 @@ const App: React.FC = () => {
     const startMonitoring = useCallback(() => {
         if (progressIntervalRef.current) {
             clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+        }
+
+        // First verify that all required components are initialized
+        if (!inferenceWorkerRef.current || !videoProcessorRef.current) {
+            console.error('[App] Cannot start monitoring - worker or video processor not found');
+            setStatusMessage({
+                message: 'System initialization incomplete. Please refresh the page.',
+                type: 'error'
+            });
+            return;
+        }
+
+        // Double-check worker initialization
+        if (!isInitialized) {
+            console.error('[App] Cannot start monitoring - worker not initialized');
+            setStatusMessage({
+                message: 'Inference system not ready. Please wait or refresh the page.',
+                type: 'warning'
+            });
+
+            // Attempt to recover by reinitializing
+            inferenceWorkerRef.current.postMessage({ type: 'init' });
+            return;
         }
 
         // Force local monitoring state regardless of React state
@@ -240,39 +285,59 @@ const App: React.FC = () => {
             return videoProcessorRef.current?.isCapturing() || false;
         };
 
-        progressIntervalRef.current = window.setInterval(() => {
-            // Only check if refs are invalid
-            if (!videoProcessorRef.current || !inferenceWorkerRef.current) {
-                return;
-            }
+        console.log('[App] Starting monitoring interval - system ready');
 
-            // Use direct check of capture state instead of React state
-            if (!isCurrentlyCapturing()) {
+        progressIntervalRef.current = window.setInterval(() => {
+            // Immediately check if we should continue
+            if (!isCurrentlyCapturing() || !isMonitoringActive || !isInitialized) {
                 if (isMonitoringActive) {
-                    console.log('Stopping monitoring because capture is no longer active');
+                    console.log('[App] Stopping monitoring - capture inactive');
                     isMonitoringActive = false;
+                    if (progressIntervalRef.current) {
+                        clearInterval(progressIntervalRef.current);
+                        progressIntervalRef.current = null;
+                    }
                 }
                 return;
             }
 
-            const progress = videoProcessorRef.current.getBufferUsagePercentage();
-            setBufferProgress(progress);
+            // Update buffer progress UI
+            if (videoProcessorRef.current) {
+                const progress = videoProcessorRef.current.getBufferUsagePercentage();
+                setBufferProgress(progress >= 100 ? 100 : progress);
 
-            // Trigger inference when minimum frames are available
-            if (videoProcessorRef.current.hasMinimumFrames()) {
-                const frameBuffer = videoProcessorRef.current.getFrameBuffer();
-                inferenceWorkerRef.current.postMessage({
-                    type: 'inference',
-                    frameBuffer,
-                    timestamp: window.performance.now()
-                });
+                // Only send frames for inference if we have enough and the worker is ready
+                if (videoProcessorRef.current.hasMinimumFrames() && inferenceWorkerRef.current) {
+                    const frameBuffer = videoProcessorRef.current.getFrameBuffer();
+                    console.log(`[App] Sending ${frameBuffer.length} frames to worker for inference`);
+                    inferenceWorkerRef.current.postMessage({
+                        type: 'inferenceResult',
+                        frameBuffer,
+                        timestamp: window.performance.now()
+                    });
+                }
             }
         }, 100);
-    }, []);
+    }, [isInitialized]); // Add isInitialized to dependency array
 
     // Start capture handler
     const handleStartCapture = useCallback(async () => {
-        if (!videoProcessorRef.current) return;
+        if (!videoProcessorRef.current || !inferenceWorkerRef.current) {
+            setStatusMessage({
+                message: 'System components not ready. Please refresh the page.',
+                type: 'error'
+            });
+            return;
+        }
+
+        // Verify worker initialization before starting capture
+        if (!isInitialized) {
+            setStatusMessage({
+                message: 'Inference system not ready. Please wait a moment.',
+                type: 'warning'
+            });
+            return;
+        }
 
         try {
             setStatusMessage({
@@ -280,21 +345,24 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
-            // Clear old data before starting new capture
-            inferenceWorkerRef.current?.postMessage({
+            // Reset data and worker state before starting
+            inferenceWorkerRef.current.postMessage({
                 type: 'reset'
             });
-
-            // Reset metrics buffers
             resetData();
 
-            // Start new capture
-            inferenceWorkerRef.current?.postMessage({
+            // Start worker capture first
+            inferenceWorkerRef.current.postMessage({
                 type: 'startCapture'
             });
 
+            // Then start video capture
             await videoProcessorRef.current.startCapture();
+
+            // Set capturing state only after successful starts
             setIsCapturing(true);
+
+            // Start monitoring after everything is ready
             startMonitoring();
 
             setStatusMessage({
@@ -308,56 +376,82 @@ const App: React.FC = () => {
                 type: 'error'
             });
         }
-    }, [startMonitoring, resetData]);
+    }, [startMonitoring, resetData, isInitialized]); // Add isInitialized to dependency array
 
-    // Stop capture handler
     const handleStopCapture = useCallback(async () => {
         if (!videoProcessorRef.current) return;
 
-        try {
-            // Set capturing state to false immediately
-            setIsCapturing(false);
+        console.log('[App] STOP CAPTURE requested');
 
-            // Stop the monitoring interval first
+        // Set state immediately to block UI interactions
+        setIsCapturing(false);
+
+        try {
+            // IMPORTANT: First stop any monitoring that could send more work to the worker
             if (progressIntervalRef.current) {
                 clearInterval(progressIntervalRef.current);
                 progressIntervalRef.current = null;
+                console.log('[App] Monitoring interval stopped');
             }
 
-            // Stop inference worker before video capture to prevent race conditions
-            inferenceWorkerRef.current?.postMessage({
-                type: 'stopCapture'
-            });
-
-            // Wait for worker to acknowledge stop
-            await new Promise(resolve => {
-                const handleMessage = (e: MessageEvent<{ type: string; status: string }>) => {
+            // Create a Promise for stopping the worker with improved messaging
+            const stopWorkerPromise = new Promise<void>((resolve) => {
+                // Setup listener before sending message to ensure we catch the response
+                const messageHandler = (e: MessageEvent) => {
                     if (e.data.type === 'stopCapture' && e.data.status === 'success') {
-                        self.removeEventListener('message', handleMessage);
-                        resolve(null);
+                        console.log('[App] Worker confirmed stop capture');
+                        inferenceWorkerRef.current?.removeEventListener('message', messageHandler);
+                        resolve();
                     }
                 };
-                self.addEventListener('message', handleMessage);
 
-                // Timeout for safety
-                setTimeout(resolve, 1000);
+                // Attach listener directly to the worker
+                if (inferenceWorkerRef.current) {
+                    inferenceWorkerRef.current.addEventListener('message', messageHandler);
+
+                    console.log('[App] Sending emergency stop command to inference worker');
+                    inferenceWorkerRef.current.postMessage({
+                        type: 'stopCapture',
+                        priority: 'emergency'
+                    });
+
+                    // Set a generous timeout
+                    setTimeout(() => {
+                        console.warn('[App] Worker stop timeout - continuing anyway');
+                        inferenceWorkerRef.current?.removeEventListener('message', messageHandler);
+                        resolve();
+                    }, 2000);
+                } else {
+                    resolve(); // No worker to stop
+                }
             });
 
-            // Finally stop video capture
-            await videoProcessorRef.current.stopCapture();
+            // Stop video capture in parallel with worker stop
+            if (videoProcessorRef.current) {
+                console.log('[App] Stopping video capture immediately');
+                await videoProcessorRef.current.stopCapture();
+            }
 
+            // Wait for worker to respond
+            await stopWorkerPromise;
+
+            // Reset data and update UI
+            resetData();
+            setBufferProgress(0);
             setStatusMessage({
                 message: 'Capture stopped. Data preserved for export.',
                 type: 'info'
             });
         } catch (error) {
-            console.error('Error stopping capture:', error);
+            console.error('[App] Error during stop capture:', error);
+            // Make absolutely sure we're in stopped state
+            setIsCapturing(false);
             setStatusMessage({
-                message: `Failed to stop capture: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                message: `Failed to stop capture properly: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 type: 'error'
             });
         }
-    }, []);
+    }, [resetData]);
 
     // Export data handler
     const handleExport = useCallback(async () => {

@@ -1,0 +1,22 @@
+Below is an overview of the processing pipeline that this web app is expected to follow:
+1. On pressing Start Capture on the interface, camera acquisition starts and face detection first occurs on the first frame.
+2. Using the detected bounding box, and based on the larger dimension (height or width), the shorter side is expanded, equally from the center to form a square bounding box. 
+3. Using the square bounding box, crop the acquired frame, and resize it to 72x72 spatial resolution.
+4. For consecutive captured frames, use existing square bounding box definition to crop the frame, and then resize to 72x72.
+5. Perform the face detection after every 3 captured frames and keep updating square bounding box. Maintain a rolling buffer of 5 square bounding box definitions to use the median center coordinates for stable face detection. If face detection fails for a frame, don't update the rolling buffer, while continue using the median value. 
+6. When face detection fails for 10 consecutive times, which will be equivalent to a time equal to 30 frames or 1 second, the capture shall stop.
+7. Keep filling a rolling buffer for 72x72 resized frames, with max number of frames set as INITIAL_FRAMES (= 181).
+8. Once INITIAL_FRAMES frames are available, run model inference, which will generate two signals - BVP and Resp - each of (INITIAL_FRAMES - 1) samples.
+9. After this point, wait for SUBSEQUENT_FRAMES (= 121) new frames to be capture and then only run model inference. This means than model inference will roughly be executed after SUBSEQUENT_FRAMES  amount of frames are captured. Until then, the only computational load will be for face detection. Signal processing needs to happen only once after acquiring SUBSEQUENT_FRAMES frames and only for new (SUBSEQUENT_FRAMES - 1) samples, i.e. slicing the samples equal to OVERLAP_FRAMES (INITIAL_FRAMES - SUBSEQUENT_FRAMES) samples.
+10. Each time model inference will generate BVP and Resp - each of (INITIAL_FRAMES - 1) samples.
+11. These (INITIAL_FRAMES - 1) samples will be passed on for signal processing - where for the first inference all (INITIAL_FRAMES - 1) samples will be used, while for subsequent model inferences, only use last (SUBSEQUENT_FRAMES - 1) samples. 
+12. New signal segments having initially - (INITIAL_FRAMES - 1) samples and subsequently (SUBSEQUENT_FRAMES - 1) samples shall be DC-removed and smoothened by applying forward backward zero phase 2nd order ButterWorth bandpass filters - (0.6 Hz to 3.3 Hz for BVP and 0.1 to 0.54 for Resp) - using target sampling rate.
+13. FFT based dominant frequency is computed to derive heart rate (HR) and respiration rate (RR) metrics.
+14. SNR is also computed to track signal quality of each signal based on the respective frequency bands.
+15. Signals, metrics and SNR are displayed in real-time using a chart on the interface.
+16. Signal buffer management shall be done in a manner as generically described here for one signal. We need similar handling for both BVP and Resp signals.
+* Maintain mainSigalBuffer which is a rolling buffer with max 54000 samples - which will be used for exporting the signal. This gradually fills up as initial (INITIAL_FRAMES - 1) samples followed by (SUBSEQUENT_FRAMES - 1) samples keep getting added until full, and then older samples are removed once more and more (SUBSEQUENT_FRAMES - 1) samples are added.
+* From this mainSigalBuffer, keep displaying most recent DISPLAY_SAMPLES (= 450) samples.
+* Similarly from this mainSigalBuffer, keep computing heart rate (HR), and respiration rate (RR) metrics and SNR using the most recent METRICS_SAMPLES (= 300) samples.
+17. On Stop Capture, camera acquisition, model inference, and signal processing stops.
+18. Internal buffers hold the data until next Start Capture - to allow Export Data.

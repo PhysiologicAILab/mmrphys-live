@@ -125,6 +125,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
 
     // Loading/empty state
     if (!isReady || !Array.isArray(data) || data.length === 0) {
+        console.debug(`Chart not ready: isReady=${isReady}, isArray=${Array.isArray(data)}, length=${data?.length || 0}`);
         return (
             <div className="vital-signs-chart not-ready">
                 <div className="chart-placeholder">

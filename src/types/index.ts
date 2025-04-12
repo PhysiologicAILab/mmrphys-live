@@ -144,6 +144,21 @@ export interface ExportData {
     performance?: PerformanceMetrics;
 }
 
+export interface InferenceResult {
+    bvp: {
+        raw: number[];
+        filtered: number[];
+        metrics: SignalMetrics;
+    };
+    resp: {
+        raw: number[];
+        filtered: number[];
+        metrics: SignalMetrics;
+    };
+    timestamp: string;
+    performanceMetrics: PerformanceMetrics;
+}
+
 // Worker Message Type
 export interface WorkerMessage {
     type: string;

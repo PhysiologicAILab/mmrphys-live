@@ -179,74 +179,100 @@ export class SignalAnalyzer {
         return constrainedRate;
     }
 
+    // Update the assessSignalQuality method to properly calculate SNR
     private static assessSignalQuality(signal: number[]): SignalMetrics['quality'] {
-        // Calculate basic statistics
-        const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-        const variance = signal.reduce((a, b) => a + (b - mean) ** 2, 0) / signal.length;
-        const stdDev = Math.sqrt(variance);
-
-        // Apply a simple window for spectral analysis
-        const windowedSignal = this.applyWindow(signal);
-        const fft = this.computeFFT(windowedSignal);
-
-        // Simple SNR calculation - ratio between signal and noise bands
-        const signalPower = this.calculateInBandPower(fft, 0.5, 3.0); // Physiological band
-        const totalPower = this.calculateTotalPower(fft);
-        const outOfBandPower = totalPower - signalPower;
-
-        const snr = signalPower > 0 && outOfBandPower > 0
-            ? 10 * Math.log10(signalPower / outOfBandPower)
-            : 0;
-
-        // Calculate artifact ratio - proportion of samples outside 3 std devs
-        const artifactRatio = signal.filter(x => Math.abs(x - mean) > 3 * stdDev).length / signal.length;
-
-        // Simple signal strength measure
-        const rms = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
-        const maxAmp = Math.max(...signal.map(Math.abs));
-        const signalStrength = rms > 0 ? maxAmp / rms : 0;
-
-        // Simplified quality determination
-        let quality: SignalMetrics['quality']['quality'] = 'poor';
-        if (snr >= 8 && artifactRatio < 0.05 && signalStrength > 1.5) {
-            quality = 'excellent';
-        } else if (snr >= 4 && artifactRatio < 0.1 && signalStrength > 1.2) {
-            quality = 'good';
-        } else if (snr >= 2 && artifactRatio < 0.15) {
-            quality = 'moderate';
+        if (signal.length < 30) {
+            return {
+                snr: 0,
+                quality: 'poor',
+                signalStrength: 0,
+                artifactRatio: 1
+            };
         }
 
-        return {
-            snr: Math.max(0, snr),
-            quality,
-            signalStrength,
-            artifactRatio
-        };
+        try {
+            // Apply windowing for spectral analysis
+            const windowedSignal = this.applyWindow(signal);
+            const fft = this.computeFFT(windowedSignal);
+
+            // Calculate power in physiological band vs noise band
+            const physiologicalBandPower = this.calculateInBandPower(fft, 0.5, 3.0);
+            const totalPower = this.calculateTotalPower(fft);
+            const noisePower = Math.max(totalPower - physiologicalBandPower, 1e-10);
+
+            // Calculate SNR with better bounds checking
+            let snr = 0;
+            if (physiologicalBandPower > 0 && noisePower > 0) {
+                snr = 10 * Math.log10(physiologicalBandPower / noisePower);
+                // Ensure reasonable SNR range
+                snr = Math.max(0, Math.min(snr, 40));
+            }
+
+            // Calculate signal strength using RMS
+            const rms = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
+            const signalStrength = Math.min(Math.max(rms * 10, 0), 1);
+
+            // Calculate artifact ratio
+            const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
+            const std = Math.sqrt(signal.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / signal.length);
+            const artifactRatio = signal.filter(x => Math.abs(x - mean) > 2 * std).length / signal.length;
+
+            // Determine quality level based on metrics
+            let quality: SignalMetrics['quality']['quality'] = 'poor';
+            if (snr >= 10 && artifactRatio < 0.1 && signalStrength > 0.3) {
+                quality = 'excellent';
+            } else if (snr >= 5 && artifactRatio < 0.2 && signalStrength > 0.2) {
+                quality = 'good';
+            } else if (snr >= 3 && artifactRatio < 0.3) {
+                quality = 'moderate';
+            }
+
+            return {
+                snr,
+                quality,
+                signalStrength,
+                artifactRatio
+            };
+        } catch (error) {
+            console.error('Error in signal quality assessment:', error);
+            return {
+                snr: 0,
+                quality: 'poor',
+                signalStrength: 0,
+                artifactRatio: 1
+            };
+        }
     }
 
+    // Make sure the calculateInBandPower and calculateTotalPower methods are working correctly
     private static calculateInBandPower(fft: { real: number[], imag: number[] }, minFreq: number, maxFreq: number): number {
         const n = fft.real.length;
         let power = 0;
 
-        for (let i = 0; i < n / 2; i++) {
+        // Ensure we don't exceed array bounds
+        for (let i = 0; i < Math.min(n / 2, fft.real.length); i++) {
             const freq = i / n;
             if (freq >= minFreq && freq <= maxFreq) {
-                power += fft.real[i] * fft.real[i] + fft.imag[i] * fft.imag[i];
+                const re = isFinite(fft.real[i]) ? fft.real[i] : 0;
+                const im = isFinite(fft.imag[i]) ? fft.imag[i] : 0;
+                power += re * re + im * im;
             }
         }
 
-        return power;
+        return Math.max(power, 1e-10); // Ensure power is never exactly zero
     }
 
     private static calculateTotalPower(fft: { real: number[], imag: number[] }): number {
-        const n = fft.real.length;
+        const n = Math.min(fft.real.length, fft.imag.length);
         let power = 0;
 
         for (let i = 0; i < n / 2; i++) {
-            power += fft.real[i] * fft.real[i] + fft.imag[i] * fft.imag[i];
+            const re = isFinite(fft.real[i]) ? fft.real[i] : 0;
+            const im = isFinite(fft.imag[i]) ? fft.imag[i] : 0;
+            power += re * re + im * im;
         }
 
-        return power;
+        return Math.max(power, 1e-10); // Ensure power is never exactly zero
     }
 
     // Simple DC removal

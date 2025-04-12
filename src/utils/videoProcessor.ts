@@ -14,20 +14,21 @@ export class VideoProcessor {
     private frameHeight: number = 72; // Default, will be updated from config
     private frameBuffer: ImageData[] = [];
     private MIN_FRAMES_REQUIRED = 181; // Will be updated from config if available
-    private readonly MAX_BUFFER_SIZE = 301;     // 10 seconds at 30 FPS +1 frame for Diff
+    private readonly MAX_BUFFER_SIZE = 181;     // 181 frame for Diff
     private mediaStream: MediaStream | null = null;
     private lastFrameTime: number = 0;
     private frameCount: number = 0;
-    private displayFrameId: number | null = null;
     private readonly targetFPS: number = 30;
-    private readonly frameInterval: number = 1000 / 30; // For 30 FPS
+    private frameInterval: number = 1000 / 30; // For 30 FPS
     private onFrameProcessed: ((frame: ImageData) => void) | null = null;
     private processingFrameId: number | null = null;
     public faceDetector: FaceDetector;
     private currentFaceBox: FaceBox | null = null;
-    private lastFaceDetectionTime: number = 0;
-    private readonly faceDetectionInterval: number = 30; // 30 ms (equal to framerate)
     private configLoaded: boolean = false;
+    private faceDetectionFrameCounter: number = 0;
+    private readonly FACE_DETECTION_INTERVAL_FRAMES: number = 3;
+    private frameTimestamps: number[] = [];
+    private readonly FPS_WINDOW_SIZE = 30; // Calculate FPS over 30 frames
 
     constructor() {
         // Initialize video element
@@ -68,6 +69,18 @@ export class VideoProcessor {
         this.setupContexts();
     }
 
+    private calculateCurrentFPS(): number {
+        if (this.frameTimestamps.length < 2) return 0;
+
+        // Calculate FPS based on the last N frames
+        const timeWindow = this.frameTimestamps[this.frameTimestamps.length - 1] -
+            this.frameTimestamps[Math.max(0, this.frameTimestamps.length - this.FPS_WINDOW_SIZE)];
+        const frameCount = Math.min(this.FPS_WINDOW_SIZE, this.frameTimestamps.length - 1);
+
+        if (timeWindow === 0) return 0;
+        return (frameCount * 1000) / timeWindow;
+    }    
+
     private createOptimizedCanvas(width: number, height: number): HTMLCanvasElement {
         const canvas = document.createElement('canvas');
         canvas.width = width;
@@ -87,6 +100,8 @@ export class VideoProcessor {
             // Clear frame buffer
             this.frameBuffer = [];
             this.currentFaceBox = null;
+            // Reset face detection counter
+            this.faceDetectionFrameCounter = 0;
 
             // Reset signal buffers (if applicable)
             if (this.onFrameProcessed) {
@@ -123,8 +138,20 @@ export class VideoProcessor {
                     reject(new Error('Video initialization timeout'));
                 }, 10000);
 
-                this.videoElement.onplaying = () => {
+                this.videoElement.onplaying = async () => {
                     clearTimeout(timeout);
+
+                    // Perform immediate face detection on first frame
+                    try {
+                        // Wait a tiny bit for the video to be fully ready
+                        await new Promise(r => setTimeout(r, 100));
+                        const initialFace = await this.faceDetector.detectFace(this.videoElement);
+                        this.currentFaceBox = initialFace;
+                        console.log('Initial face detection completed');
+                    } catch (error) {
+                        console.warn('Initial face detection failed:', error);
+                    }
+
                     this.startFrameProcessing();
                     resolve();
                 };
@@ -173,15 +200,18 @@ export class VideoProcessor {
     }
 
     private async updateFaceDetection(): Promise<void> {
-        const now = performance.now();
-        if (now - this.lastFaceDetectionTime >= this.faceDetectionInterval) {
+        // Replace time-based detection with frame-count-based detection
+        this.faceDetectionFrameCounter++;
+
+        if (this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES) {
             try {
                 const detectedFace = await this.faceDetector.detectFace(this.videoElement);
                 this.currentFaceBox = detectedFace;
+                // Reset counter after detection
+                this.faceDetectionFrameCounter = 0;
             } catch (error) {
                 console.error('Face detection error:', error);
             }
-            this.lastFaceDetectionTime = now;
         }
     }
 
@@ -225,6 +255,31 @@ export class VideoProcessor {
                 console.warn('Attempting to process frame before config is loaded');
                 return;
             }
+
+            // Record timestamp for FPS calculation
+            const now = performance.now();
+            this.frameTimestamps.push(now);
+
+            // Keep the buffer size reasonable
+            if (this.frameTimestamps.length > this.FPS_WINDOW_SIZE * 2) {
+                this.frameTimestamps = this.frameTimestamps.slice(-this.FPS_WINDOW_SIZE);
+            }
+
+            // Calculate and log FPS every 30 frames
+            if (this.frameCount % 30 === 0) {
+                const currentFPS = this.calculateCurrentFPS();
+                console.log(`[VideoProcessor] Current effective FPS: ${currentFPS.toFixed(1)}`);
+
+                // If FPS is consistently too low (below 90% of target), adjust frame interval
+                if (currentFPS > 0 && currentFPS < this.targetFPS * 0.9 && this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
+                    // Reduce frame interval slightly to compensate for browser timing issues
+                    const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
+                    console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
+                    this.frameInterval = newInterval;
+                }
+            }
+
+            this.frameCount++;
 
             const cropRegion = this.getCropRegion();
 
