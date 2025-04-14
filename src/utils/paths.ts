@@ -29,6 +29,8 @@ class PathManager {
         console.log('self.location:', self.location);
         console.log('globalThis:', globalThis);
 
+        // CDN paths work in both local and production environments
+        
         if (typeof self !== 'undefined' && self.location) {
             // Use self for web workers
             const isLocal = self.location.hostname.includes('localhost');

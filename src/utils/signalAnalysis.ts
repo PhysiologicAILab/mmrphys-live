@@ -1,5 +1,7 @@
 // src/utils/signalAnalysis.ts
 
+import { PassThrough } from "stream";
+
 export interface SignalQuality {
     snr: number;           // Signal-to-noise ratio
     signalStrength: number;// Overall signal strength
@@ -12,54 +14,42 @@ export interface SignalMetrics {
     quality: SignalQuality;
 }
 
-//     // Apply appropriate bandpass filter based on signal type
-//     public applySignalFilter(signal: number[], fs: number, type: 'heart' | 'resp'): number[] {
-//     if (signal.length === 0) return [];
-
-//     // Select filter parameters based on signal type
-//     if (type === 'heart') {
-//         // BVP: 0.6 Hz to 3.3 Hz
-//         return this.applyButterworthBandpass(signal, 0.6, 3.3, fs);
-//     } else {
-//         // Respiratory: 0.1 Hz to 0.54 Hz
-//         return this.applyButterworthBandpass(signal, 0.1, 0.54, fs);
-//     }
-// }
-
-
 export class SignalFilters {
 
     private a: number[] = [];
     private b: number[] = [];
 
-    constructor(lowCutoff: number, highCutoff: number, fs: number) {
-        this.designButterworth(lowCutoff, highCutoff, fs);
+    constructor(type: string, fs: number) {
+        this.designButterworth(type, fs);
     }
 
 
     // Design a 2nd order Butterworth bandpass filter
-    private designButterworth(lowCutoff: number, highCutoff: number, fs: number): void {
+    private designButterworth(type: string, fs: number): void {
         // Normalize frequencies to Nyquist frequency
-        const nyquist = fs / 2;
-        const wLow = Math.tan((Math.PI * lowCutoff) / nyquist);
-        const wHigh = Math.tan((Math.PI * highCutoff) / nyquist);
-
-        // Calculate filter coefficients
-        const K = 1 / (wHigh - wLow);
-
-        // Second-order section coefficients
-        const b0 = K * (wHigh - wLow);
-        const b1 = 0;
-        const b2 = -b0;
-
-        const a0 = 1 + K * (wHigh - wLow) + (wHigh * wLow * K * K);
-        const a1 = 2 * (wHigh * wLow * K * K - 1);
-        const a2 = 1 - K * (wHigh - wLow) + (wHigh * wLow * K * K);
-
-        // Normalize coefficients
-        this.b = [b0 / a0, b1 / a0, b2 / a0];
-        this.a = [1, a1 / a0, a2 / a0]; 
-    }    
+        if (type === 'heart' || type === 'bvp') {
+            // Heart rate bandpass filter
+            if (fs == 30) {
+                this.b = [0.05644846226073645, 0.0, -0.1128969245214729, 0.0, 0.05644846226073645];
+                this.a = [1.0, -3.081806064993257, 3.6679952325214913, -2.031385227796349, 0.4504454300560409];
+            }
+            else if (fs == 25) {
+                this.b = [0.07671797400308883, 0.0, -0.15343594800617766, 0.0, 0.07671797400308883];
+                this.a = [1.0, -2.8801703902977813, 3.234887695468058, -1.7297005100770213, 0.3851904131124458];                
+            }
+        }
+        else if (type === 'resp') {
+            // Respiratory bandpass filter
+            if (fs == 30) {
+                this.b = [0.001991943576502138, 0.0, -0.003983887153004276, 0.0, 0.001991943576502138];
+                this.a = [1.0, -3.8652573103442673, 5.608620144892655, -3.6211682561347818, 0.8778106837571596];
+            }
+            else if (fs == 25) {
+                this.b = [0.0028330185033880657, 0.0, -0.005666037006776131, 0.0, 0.0028330185033880657];
+                this.a = [1.0, -3.8373339990587354, 5.530399483585574, -3.5482812433954805, 0.8552265340438167];
+            }
+        }
+    }
 
     // Simple 1D filter (lfilter equivalent)
     private lfilter(signal: number[]): number[] {
@@ -67,17 +57,27 @@ export class SignalFilters {
         const x = [...signal];
         const y = [...result];
 
-        for (let i = 0; i < signal.length; i++) {
-            y[i] = this.b[0] * x[i];
 
-            // Add input history
-            for (let j = 1; j < this.b.length && i - j >= 0; j++) {
-                y[i] += this.b[j] * x[i - j];
+        // If a[0] is not 1, normalize both a and b coefficients
+        if (this.a[0] !== 1) {
+            const a0 = this.a[0];
+            for (let i = 0; i < this.b.length; i++) this.b[i] /= a0;
+            for (let i = 0; i < this.a.length; i++) this.a[i] /= a0;
+        }
+
+        for (let i = 0; i < x.length; i++) {
+            // Apply the numerator coefficients (b terms)
+            for (let j = 0; j < this.b.length; j++) {
+                if (i - j >= 0) {
+                    y[i] += this.b[j] * x[i - j];
+                }
             }
 
-            // Subtract output history
-            for (let j = 1; j < this.a.length && i - j >= 0; j++) {
-                y[i] -= this.a[j] * y[i - j];
+            // Apply the denominator coefficients (a terms)
+            for (let j = 1; j < this.a.length; j++) {
+                if (i - j >= 0) {
+                    y[i] -= this.a[j] * y[i - j];
+                }
             }
         }
 

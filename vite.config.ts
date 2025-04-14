@@ -1,43 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import fs from 'fs';
 import type { Plugin } from 'vite';
-
-function copyOrtWasmFiles(): Plugin {
-    return {
-        name: 'copy-ort-wasm',
-        buildStart() {
-            const ortPath = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
-            const publicPath = path.resolve(__dirname, 'public/ort');
-
-            // Ensure target directory exists
-            if (!fs.existsSync(publicPath)) {
-                fs.mkdirSync(publicPath, { recursive: true });
-            }
-
-            const wasmFiles = [
-                'ort-wasm.wasm',
-                'ort-wasm-simd.wasm',
-                'ort-wasm-threaded.wasm',
-                'ort-wasm-simd-threaded.wasm'
-            ];
-
-            // Copy files from ONNX Runtime Web package
-            wasmFiles.forEach(file => {
-                const src = path.join(ortPath, file);
-                const dest = path.join(publicPath, file);
-
-                if (fs.existsSync(src)) {
-                    fs.copyFileSync(src, dest);
-                    console.log(`✓ Copied ${file} to public/ort/`);
-                } else {
-                    console.warn(`⚠ Source file not found: ${file}`);
-                }
-            });
-        }
-    };
-}
 
 function wasmContentTypePlugin(): Plugin {
     return {
@@ -53,11 +17,16 @@ function wasmContentTypePlugin(): Plugin {
     };
 }
 
+// Determine base path dynamically
+function getGitHubPagesBase() {
+    // For GitHub Pages, use an empty string when deploying to CDN
+    return process.env.GITHUB_PAGES === 'true' ? '' : '/';
+}
+
 export default defineConfig({
-    base: '/mmrphys-live/',
+    base: getGitHubPagesBase(),
     plugins: [
         react(),
-        copyOrtWasmFiles(),
         wasmContentTypePlugin()
     ],
     resolve: {
@@ -66,10 +35,22 @@ export default defineConfig({
         }
     },
     build: {
-        target: 'esnext',
         outDir: 'dist',
         assetsDir: 'assets',
-        sourcemap: true
+        sourcemap: true,
+        rollupOptions: {
+            output: {
+                assetFileNames: (assetInfo) => {
+                    // Preserve paths for model-specific files
+                    if (/\.(wasm|onnx|json|model)$/.test(assetInfo.name || '')) {
+                        return `${assetInfo.name}`;
+                    }
+                    return 'assets/[name]-[hash][extname]';
+                },
+                chunkFileNames: 'assets/[name]-[hash].js',
+                entryFileNames: 'assets/[name]-[hash].js',
+            }
+        }
     },
     optimizeDeps: {
         exclude: ['onnxruntime-web']

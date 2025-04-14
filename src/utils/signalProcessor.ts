@@ -34,6 +34,8 @@ export class SignalProcessor {
     private respBandpassFilter: SignalFilters;
 
     // Moving average window sizes for different signals
+    private BVP_Mean: number = 0;
+    private RESP_Mean: number = 0;
     private readonly BVP_MA_WINDOW: number;
     private readonly RESP_MA_WINDOW: number;
 
@@ -72,8 +74,8 @@ export class SignalProcessor {
         this.respBuffer = this.createBuffer();
 
         // Bandpass filters for BVP and Resp signals
-        this.bvpBandpassFilter = new SignalFilters(0.6, 3.3, this.fps);
-        this.respBandpassFilter = new SignalFilters(0.1, 0.54, this.fps);
+        this.bvpBandpassFilter = new SignalFilters("bvp", this.fps);    //supports only 30 and 25 fps
+        this.respBandpassFilter = new SignalFilters("resp", this.fps);  //supports only 30 and 25 fps
     }
 
     private createBuffer(): SignalBuffer {
@@ -348,18 +350,23 @@ export class SignalProcessor {
     }
 
     private processSegment(signal: number[], type: 'heart' | 'resp'): number[] {
-        // Step 1: Remove DC component
-        const dcRemoved = SignalAnalyzer.removeDC(signal);
+        // // Step 1: Remove DC component
+        // const dcRemoved = SignalAnalyzer.removeDC(signal);
 
-        // Step 2: Apply additional smoothing for respiratory signal
-        const smoothed = type === 'resp' ?
-            this.applySmoothingFilter(dcRemoved, this.RESP_MA_WINDOW) :
-            this.applySmoothingFilter(dcRemoved, this.BVP_MA_WINDOW);
+        // // Step 2: Apply additional smoothing for respiratory signal
+        // const smoothed = type === 'resp' ?
+        //     this.applySmoothingFilter(dcRemoved, this.RESP_MA_WINDOW) :
+        //     this.applySmoothingFilter(dcRemoved, this.BVP_MA_WINDOW);
 
-        // // Step 2: Apply bandpass filter
-        // const smoothed = type === 'heart' ?
-        //     this.bvpBandpassFilter.applyButterworthBandpass(dcRemoved) :
-        //     this.respBandpassFilter.applyButterworthBandpass(dcRemoved);
+        let smoothed: number[] = [];
+        // Step 2: Apply bandpass filter
+        if (type === 'heart') {
+            const dcRemoved = signal.map(val => val - this.BVP_Mean);
+            smoothed = this.bvpBandpassFilter.applyButterworthBandpass(dcRemoved)
+        } else {
+            const dcRemoved = signal.map(val => val - this.RESP_Mean);
+            smoothed = this.respBandpassFilter.applyButterworthBandpass(dcRemoved);
+        }
 
         // // Handle NaN or Infinity values
         // return smoothed.map(val => isFinite(val) ? val : 0);
@@ -517,6 +524,9 @@ export class SignalProcessor {
         const respRawDisplay = this.respBuffer.raw.slice(-respDisplaySamples);
         const bvpFilteredDisplay = this.bvpBuffer.filtered.slice(-bvpDisplaySamples);
         const respFilteredDisplay = this.respBuffer.filtered.slice(-respDisplaySamples);
+
+        this.BVP_Mean = bvpRawDisplay.reduce((sum, val) => sum + val, 0) / bvpRawDisplay.length;
+        this.RESP_Mean = respRawDisplay.reduce((sum, val) => sum + val, 0) / respRawDisplay.length;
 
         // Min-max normalization for display as specified in requirements
         const normalizedBVP = this.normalizeForDisplay(bvpFilteredDisplay);
