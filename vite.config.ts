@@ -54,7 +54,7 @@ function wasmContentTypePlugin(): Plugin {
 }
 
 export default defineConfig({
-    base: '/mmrphys-live/',
+    base: '/',
     plugins: [
         react(),
         copyOrtWasmFiles(),
