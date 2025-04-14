@@ -229,17 +229,26 @@ export class SignalAnalyzer {
     private static calculateSNR(signal: number[], raw: number[]): number {
         const signalPower = this.calculatePower(signal);
 
+        // If signal power is too low, return minimum threshold
+        if (signalPower < 1e-10) {
+            console.warn('Signal power is too low, setting SNR to a minimum threshold');
+            return 0.01;
+        }
+
         // Calculate noise as the difference between raw and filtered signals
         const noise = raw.map((val, i) => val - signal[i]);
         const noisePower = this.calculatePower(noise);
 
         // Handle zero noise power
-        if (noisePower === 0) {
-            console.warn('Noise power is zero, setting SNR to a minimum threshold');
+        if (noisePower === 0 || noisePower < 1e-10) {
+            console.warn('Noise power is zero or too low, setting SNR to a minimum threshold');
             return 0.01; // Minimum SNR threshold
         }
 
-        return 10 * Math.log10(signalPower / noisePower);
+        const snr = 10 * Math.log10(signalPower / noisePower);
+
+        // Ensure the SNR is not negative or too small
+        return snr <= 0 ? 0.01 : snr;
     }
 
     private static calculatePower(signal: number[]): number {

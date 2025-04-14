@@ -348,20 +348,28 @@ class InferenceWorker {
     }
 
     async exportData(): Promise<void> {
-        if (!this.signalProcessor) {
-            throw new Error('Signal processor not initialized');
-        }
-
         try {
             console.log('[InferenceWorker] Preparing data for export...');
+
+            // Make sure we have a signal processor, even if in shutdown state
+            if (!this.signalProcessor) {
+                throw new Error('Signal processor not initialized');
+            }
 
             // Get export data from signal processor
             const data = this.signalProcessor.getExportData();
 
+            // Check if we actually have data to export
+            if (!data || !data.signals ||
+                (!data.signals.bvp.raw.length && !data.signals.resp.raw.length)) {
+                throw new Error('No data available to export');
+            }
+
             // Convert data to JSON string
             const exportedData = JSON.stringify(data);
+            console.log('[InferenceWorker] Data prepared for export, size:', exportedData.length);
 
-            // Send to main thread
+            // Send to main thread - only send once
             self.postMessage({
                 type: 'exportData',
                 status: 'success',
@@ -429,9 +437,21 @@ class InferenceWorker {
     }
 
     reset(): void {
+        console.log('[InferenceWorker] Full worker reset initiated');
+
+        // Reset global flags first
+        isShuttingDown = false;
+        globalStopRequested = false;
+
+        // Reset signal processor if it exists
         if (this.signalProcessor) {
             this.signalProcessor.reset();
         }
+
+        // Restore initialization flag - extremely important
+        this.isInitialized = true;
+
+        console.log('[InferenceWorker] Worker reset complete, ready for new capture');
     }
 
     async dispose(): Promise<void> {
@@ -464,15 +484,10 @@ self.onmessage = async (e: MessageEvent) => {
             return;
         }
 
-        // For all other messages, if we're shutting down, ignore them
-        if (isShuttingDown || globalStopRequested) {
-            console.log(`[InferenceWorker] Ignoring message of type ${e.data.type} - worker is shutting down`);
-            return;
-        }
-
-        // If we get a reset command, clear the shutdown state
+        // Special handling for reset - always process regardless of state
         if (e.data.type === 'reset') {
             console.log('[InferenceWorker] Resetting worker state');
+            // Reset global flags
             isShuttingDown = false;
             globalStopRequested = false;
             worker.reset();
@@ -480,9 +495,21 @@ self.onmessage = async (e: MessageEvent) => {
             return;
         }
 
+        // Handle export even in shutdown state - we want to be able to export after stopping
+        if (e.data.type === 'exportData') {
+            await worker.exportData();
+            return;
+        }
+
+        // For all other messages, if we're shutting down, ignore them
+        if (isShuttingDown || globalStopRequested) {
+            console.log(`[InferenceWorker] Ignoring message of type ${e.data.type} - worker is shutting down`);
+            return;
+        }
+
         // For inference requests, check if we're supposed to be capturing
         if (e.data.type === 'inferenceResult' &&
-            (globalStopRequested || isShuttingDown || !worker.signalProcessor || !worker.signalProcessor.isCapturing)) {
+            (!worker.signalProcessor || !worker.signalProcessor.isCapturing)) {
             console.log(`[InferenceWorker] Ignoring inference request - capture inactive`);
             return;
         }
@@ -497,9 +524,6 @@ self.onmessage = async (e: MessageEvent) => {
                 break;
             case 'inferenceResult':
                 await worker.runInference(e.data.frameBuffer);
-                break;
-            case 'exportData':
-                await worker.exportData();
                 break;
             default:
                 console.warn(`[InferenceWorker] Unknown message type: ${e.data.type}`);

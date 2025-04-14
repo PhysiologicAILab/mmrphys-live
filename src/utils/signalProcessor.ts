@@ -66,7 +66,7 @@ export class SignalProcessor {
         this.fps = fps;
 
         // Set appropriate moving average window sizes based on sampling rate
-        this.BVP_MA_WINDOW = Math.round(0.4 * fps); // 400 ms for heart rate
+        this.BVP_MA_WINDOW = Math.round(0.3 * fps); // 300 ms for heart rate
         this.RESP_MA_WINDOW = Math.round(1.0 * fps);  // 1000 ms for respiration
 
         // Initialize buffers
@@ -361,11 +361,13 @@ export class SignalProcessor {
         let smoothed: number[] = [];
         // Step 2: Apply bandpass filter
         if (type === 'heart') {
-            const dcRemoved = signal.map(val => val - this.BVP_Mean);
-            smoothed = this.bvpBandpassFilter.applyButterworthBandpass(dcRemoved)
+            // const dcRemoved = signal.map(val => val - this.BVP_Mean);
+            // smoothed = this.applySmoothingFilter(dcRemoved, this.BVP_MA_WINDOW);
+            smoothed = this.bvpBandpassFilter.applyButterworthBandpass(signal)
         } else {
-            const dcRemoved = signal.map(val => val - this.RESP_Mean);
-            smoothed = this.respBandpassFilter.applyButterworthBandpass(dcRemoved);
+            // const dcRemoved = signal.map(val => val - this.RESP_Mean);
+            // smoothed = this.applySmoothingFilter(dcRemoved, this.RESP_MA_WINDOW)
+            smoothed = this.respBandpassFilter.applyButterworthBandpass(signal);
         }
 
         // // Handle NaN or Infinity values

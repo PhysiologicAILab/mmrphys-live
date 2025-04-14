@@ -117,9 +117,6 @@ const App: React.FC = () => {
                         case 'inferenceResult':
                             handleInferenceResults(e);
                             break;
-                        case 'exportData':
-                            handleExportResults(e);
-                            break;
                         case 'error':
                             handleWorkerError(e);
                             break;
@@ -220,46 +217,6 @@ const App: React.FC = () => {
         }
     };
 
-    // Handler for export results
-    const handleExportResults = (event: MessageEvent) => {
-        if (event.data.status === 'success') {
-            console.log('[App] Export data received from worker, triggering download');
-
-            // Create a download link
-            const blob = new Blob([event.data.data], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-
-            // Create link element to trigger download
-            const link = document.createElement('a');
-            link.href = url;
-
-            // Generate filename with timestamp
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            link.download = `vital-signs-${timestamp}.json`;
-
-            // Trigger download
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            // Clean up
-            URL.revokeObjectURL(url);
-
-            setExporting(false);
-            setStatusMessage({
-                message: 'Data exported successfully!',
-                type: 'success'
-            });
-        } else {
-            // Handle error
-            console.error('[App] Export error:', event.data.error);
-            setExporting(false);
-            setStatusMessage({
-                message: `Export failed: ${event.data.error}`,
-                type: 'error'
-            });
-        }
-    };
 
     // Handler for worker errors
     const handleWorkerError = (event: MessageEvent) => {
@@ -436,10 +393,33 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
-            // Reset data and worker state before starting
-            inferenceWorkerRef.current.postMessage({
-                type: 'reset'
+            // First reset and wait for confirmation
+            await new Promise<void>((resolve, reject) => {
+                const resetListener = (e: MessageEvent) => {
+                    if (e.data.type === 'reset' && e.data.status === 'success') {
+                        inferenceWorkerRef.current?.removeEventListener('message', resetListener);
+                        resolve();
+                    }
+                };
+
+                if (inferenceWorkerRef.current) {
+                    inferenceWorkerRef.current.addEventListener('message', resetListener);
+                }
+
+                // Send reset with timeout
+                if (inferenceWorkerRef.current) {
+                    inferenceWorkerRef.current.postMessage({ type: 'reset' });
+                }
+
+                // Set timeout to avoid hanging
+                setTimeout(() => {
+                    inferenceWorkerRef.current?.removeEventListener('message', resetListener);
+                    console.warn('[App] Reset response timeout - continuing anyway');
+                    resolve();
+                }, 1000);
             });
+
+            // Reset local data
             resetData();
 
             // Start worker capture first
@@ -467,7 +447,7 @@ const App: React.FC = () => {
                 type: 'error'
             });
         }
-    }, [startMonitoring, resetData, isInitialized]); // Add isInitialized to dependency array
+    }, [startMonitoring, resetData, isInitialized]);
 
     const handleStopCapture = useCallback(async () => {
         if (!videoProcessorRef.current) return;
@@ -544,9 +524,14 @@ const App: React.FC = () => {
         }
     }, [resetData]);
 
-    // Export data handler
     const handleExport = useCallback(async () => {
-        if (!inferenceWorkerRef.current) return;
+        if (!inferenceWorkerRef.current) {
+            setStatusMessage({
+                message: 'Worker not available for export',
+                type: 'error'
+            });
+            return;
+        }
 
         try {
             setExporting(true);
@@ -555,13 +540,69 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
-            // Request the data from the worker
-            inferenceWorkerRef.current.postMessage({
-                type: 'exportData'
+            // Track if export has been processed
+            let exportProcessed = false;
+
+            // Create a Promise for export response
+            const exportPromise = new Promise<void>((resolve, reject) => {
+                const messageHandler = (e: MessageEvent) => {
+                    if (e.data.type === 'exportData') {
+                        // Only process if not already handled
+                        if (!exportProcessed) {
+                            exportProcessed = true;
+                            console.log('[App] Processing export data, removing listener');
+                            inferenceWorkerRef.current?.removeEventListener('message', messageHandler);
+
+                            if (e.data.status === 'success') {
+                                console.log('[App] Export data received, size:', e.data.data.length);
+
+                                // Create download blob
+                                const blob = new Blob([e.data.data], { type: 'application/json' });
+                                const url = URL.createObjectURL(blob);
+
+                                // Trigger download
+                                const link = document.createElement('a');
+                                link.href = url;
+                                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                                link.download = `vital-signs-${timestamp}.json`;
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                                URL.revokeObjectURL(url);
+
+                                resolve();
+                            } else {
+                                reject(new Error(e.data.error || 'Export failed'));
+                            }
+                        }
+                    }
+                };
+
+                // Listen for export response
+                inferenceWorkerRef.current?.addEventListener('message', messageHandler);
+
+                // Request export data
+                console.log('[App] Sending export data request to worker');
+                inferenceWorkerRef.current?.postMessage({ type: 'exportData' });
+
+                // Set timeout to avoid hanging
+                setTimeout(() => {
+                    if (!exportProcessed) {
+                        inferenceWorkerRef.current?.removeEventListener('message', messageHandler);
+                        reject(new Error('Export timeout - no response received'));
+                    }
+                }, 5000);
             });
-            console.log('[App] Export data request sent to worker');
+
+            // Wait for export to complete
+            await exportPromise;
+
+            setStatusMessage({
+                message: 'Data exported successfully!',
+                type: 'success'
+            });
         } catch (error) {
-            console.error('Export error:', error);
+            console.error('[App] Export error:', error);
             setStatusMessage({
                 message: `Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 type: 'error'
