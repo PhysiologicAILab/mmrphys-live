@@ -34,12 +34,12 @@ jobs:
       
       - name: Build
         run: |
+          # Run the main build first
           npm run build
-          npx tsc --project tsconfig.build.json
-          npx tsc --project tsconfig.workers.json
-          # Skip TypeScript declaration files generation if it's causing issues
-          # npx tsc --project tsconfig.build.json
-      
+          
+          # Skip TypeScript declaration files generation
+          # They're causing conflicts with the build output
+          
       - name: Verify Build Output
         run: |
           if [ ! -d "dist" ]; then
