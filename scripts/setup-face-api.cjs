@@ -7,11 +7,13 @@ const MODELS_DIR = path.join(process.cwd(), 'public', 'models', 'face-api');
 const MODEL_FILES = {
     manifest: {
         filename: 'tiny_face_detector_model-weights_manifest.json',
-        url: 'https://justadudewhohacks.github.io/face-api.js/models/tiny_face_detector_model-weights_manifest.json'
+        // url: 'https://justadudewhohacks.github.io/face-api.js/models/tiny_face_detector_model-weights_manifest.json'
+        url: 'https://cdn.jsdelivr.net/gh/jnj256/rphys-assets@main/models/face-api/tiny_face_detector_model-weights_manifest.json'
     },
     shard: {
         filename: 'tiny_face_detector_model-shard1',
-        url: 'https://justadudewhohacks.github.io/face-api.js/models/tiny_face_detector_model-shard1'
+        // url: 'https://justadudewhohacks.github.io/face-api.js/models/tiny_face_detector_model-shard1'
+        url: 'https://cdn.jsdelivr.net/gh/jnj256/rphys-assets@main/models/face-api/tiny_face_detector_model-shard1'
     }
 };
 

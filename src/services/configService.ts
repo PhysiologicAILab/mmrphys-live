@@ -1,5 +1,5 @@
 // src/services/configService.ts
-import { ApplicationPaths, Paths } from '../utils/paths';
+import { ApplicationPaths, Paths } from '@/utils/paths';
 
 export type ModelConfig = {
     FRAME_NUM: number;
