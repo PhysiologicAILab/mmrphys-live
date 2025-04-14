@@ -1,4 +1,6 @@
 // src/services/configService.ts
+import { ApplicationPaths, Paths } from '../utils/paths';
+
 export type ModelConfig = {
     FRAME_NUM: number;
     TASKS: string[];
@@ -62,10 +64,18 @@ class ConfigService {
     public async getModelPath(): Promise<string> {
         try {
             const config = await this.getConfig();
-            return config.model_path || '/models/rphys/SCAMPS_Multi_9x9.onnx';
+            // If config has a model_path, use Paths.getModelUrl to get the proper URL
+            if (config.model_path) {
+                return config.model_path.startsWith('http')
+                    ? config.model_path
+                    : Paths.getModelUrl(config.model_path.replace(/^\//, ''));
+            } else {
+                // Use ApplicationPaths.rphysModel for the default
+                return ApplicationPaths.rphysModel();
+            }
         } catch (error) {
             console.warn('[ConfigService] Error getting model path, using default:', error);
-            return '/models/rphys/SCAMPS_Multi_9x9.onnx';
+            return ApplicationPaths.rphysModel();
         }
     }
 
@@ -135,8 +145,10 @@ class ConfigService {
 
     private async loadConfig(): Promise<ModelConfig> {
         try {
-            console.log('[ConfigService] Loading model configuration from /models/rphys/config.json');
-            const response = await fetch('/models/rphys/config.json');
+            const configPath = ApplicationPaths.rphysConfig();
+            console.log(`[ConfigService] Loading model configuration from ${configPath}`);
+
+            const response = await fetch(configPath);
             if (!response.ok) {
                 throw new Error(`Failed to load config: ${response.status} ${response.statusText}`);
             }

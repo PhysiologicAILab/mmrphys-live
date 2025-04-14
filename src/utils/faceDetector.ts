@@ -1,4 +1,5 @@
 import * as faceapi from 'face-api.js';
+import { ApplicationPaths } from './paths';
 
 /**
  * Represents a face bounding box with position and dimensions
@@ -412,7 +413,7 @@ export class FaceDetector {
      */
     private async loadModelWeights(): Promise<void> {
         try {
-            const modelPath = '/models/face-api';
+            const modelPath = ApplicationPaths.faceApiModel();
             console.log(`Loading face detection model from: ${modelPath}`);
 
             // Clean up existing model to prevent memory leaks

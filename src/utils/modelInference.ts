@@ -1,11 +1,12 @@
 import * as ort from 'onnxruntime-web';
+import { ApplicationPaths } from './paths';
 
 // Configure ONNX Runtime WebAssembly backend paths
 ort.env.wasm.wasmPaths = {
-    'ort-wasm.wasm': '/ort/ort-wasm.wasm',
-    'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
-    'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
-    'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
+    'ort-wasm.wasm': ApplicationPaths.ortWasm('ort-wasm.wasm'),
+    'ort-wasm-simd.wasm': ApplicationPaths.ortWasm('ort-wasm-simd.wasm'),
+    'ort-wasm-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-threaded.wasm'),
+    'ort-wasm-simd-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-simd-threaded.wasm')
 };
 
 // Configure WASM flags
@@ -143,13 +144,17 @@ export class VitalSignsModel {
 
     private async configureOrtEnvironment(): Promise<void> {
         try {
-            // Configure WASM paths and verify they exist
+            console.log('Configuring ONNX Runtime environment...');
+
+            // Define WASM paths
             const wasmPaths = {
-                'ort-wasm.wasm': '/ort/ort-wasm.wasm',
-                'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
-                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
-                'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
+                'ort-wasm.wasm': ApplicationPaths.ortWasm('ort-wasm.wasm'),
+                'ort-wasm-simd.wasm': ApplicationPaths.ortWasm('ort-wasm-simd.wasm'),
+                'ort-wasm-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-threaded.wasm'),
+                'ort-wasm-simd-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-simd-threaded.wasm')
             };
+
+            console.log('WASM paths:', wasmPaths);
 
             // Verify WASM files are accessible
             await Promise.all(
@@ -176,9 +181,13 @@ export class VitalSignsModel {
     private async loadConfig(): Promise<void> {
         try {
             console.log('Loading model configuration...');
-            const configResponse = await fetch('/models/rphys/config.json', {
+            const configPath = ApplicationPaths.rphysConfig();
+            const configResponse = await fetch(configPath, {
                 cache: 'force-cache',
-                credentials: 'same-origin'
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json'
+                }
             });
 
             if (!configResponse.ok) {
@@ -202,11 +211,7 @@ export class VitalSignsModel {
     private async initializeSession(): Promise<void> {
         try {
             console.log('Loading ONNX model...');
-
-            const modelPath = this.config?.model_path || 'models/rphys/SCAMPS_Multi_9x9.onnx';
-            console.log(`Loading model from: ${modelPath}`);
-
-            const modelResponse = await fetch(modelPath, {
+            const modelResponse = await fetch(ApplicationPaths.rphysModel(), {
                 cache: 'force-cache',
                 credentials: 'same-origin'
             });

@@ -40,7 +40,7 @@ type WorkerResponse = InitResponse | ProcessResponse;
 // Declare the self with the correct type
 declare const self: DedicatedWorkerGlobalScope;
 
-// Process video frame to 9x9 resolution
+// Process video frame to 72x72 resolution
 async function processVideoFrame(imageData: ImageData, faceBox?: {
     x: number;
     y: number;

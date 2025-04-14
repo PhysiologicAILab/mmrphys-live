@@ -9,12 +9,95 @@
     <title>Camera-based Contactless Sensing of Physiological Signals</title>
     <link rel="stylesheet" href="/src/styles/main.css" />
 
-    <!-- Preload critical resources with correct MIME types -->
-    <link rel="preload" href="/models/face-api/tiny_face_detector_model-weights_manifest.json" as="fetch"
-        type="application/json" crossorigin="anonymous" />
-    <link rel="preload" href="/models/rphys/config.json" as="fetch" type="application/json" crossorigin="anonymous" />
-    <link rel="preload" href="/models/rphys/SCAMPS_Multi_72x72.onnx" as="fetch" type="application/octet-stream"
-        crossorigin="anonymous" />
+    <!-- Dynamic model path configuration script -->
+    <script>
+        // Detect deployment environment
+        const isLocal = self.location.hostname.includes('localhost');
+
+        window.ModelPathConfig = window.ModelPathConfig || {
+            MODELS_REPO: 'jnj256/rphys-assets',
+            MODELS_VERSION: 'main',
+            CDN_BASE: 'https://cdn.jsdelivr.net/gh',
+            getBaseUrl: function () {
+                const isLocal = self.location.hostname.includes('localhost');
+                if (isLocal) {
+                    return '/';
+                }
+                return `${this.CDN_BASE}/${this.MODELS_REPO}@${this.MODELS_VERSION}/`;
+            }
+        };
+
+        // Set up MODEL_PATHS similarly
+        window.MODEL_PATHS = window.MODEL_PATHS || (() => {
+            const baseUrl = window.ModelPathConfig.getBaseUrl();
+            return {
+                faceApi: `${baseUrl}models/face-api/`,
+                rphys: `${baseUrl}models/rphys/`,
+                ort: `${baseUrl}ort/`
+            };
+        })();
+
+    </script>
+
+    <!-- Preload critical resources with dynamic paths -->
+    <script>
+        function createPreloadLink(href, as, type = 'fetch', importance = 'high') {
+            const link = document.createElement('link');
+            link.rel = 'preload';
+            link.href = href;
+            link.as = as;
+            if (type) link.type = type;
+            link.crossOrigin = 'anonymous';
+            link.importance = importance;
+            document.head.appendChild(link);
+        }
+
+        // Use dynamic paths from MODEL_PATHS
+        if (window.MODEL_PATHS) {
+            createPreloadLink(
+                `${window.MODEL_PATHS.faceApi}tiny_face_detector_model-weights_manifest.json`,
+                'fetch',
+                'application/json',
+                'high'
+            );
+            createPreloadLink(
+                `${window.MODEL_PATHS.rphys}config.json`,
+                'fetch',
+                'application/json',
+                'high'
+            );
+            createPreloadLink(
+                `${window.MODEL_PATHS.rphys}SCAMPS_Multi_72x72.onnx`,
+                'fetch',
+                'application/octet-stream',
+                'high'
+            );
+        }
+
+        // Delayed loading of WASM files
+        window.addEventListener('load', () => {
+            // Use requestIdleCallback if available, otherwise setTimeout
+            const scheduleLoad = window.requestIdleCallback || setTimeout;
+
+            scheduleLoad(() => {
+                const wasmFiles = [
+                    'ort-wasm.wasm',
+                    'ort-wasm-simd.wasm',
+                    'ort-wasm-threaded.wasm',
+                    'ort-wasm-simd-threaded.wasm',
+                ];
+
+                wasmFiles.forEach(file => {
+                    createPreloadLink(
+                        `${window.MODEL_PATHS.ort}${file}`,
+                        'fetch',
+                        'application/wasm',
+                        'low'
+                    );
+                });
+            }, { timeout: 2000 });
+        });
+    </script>
 
     <!-- Add iOS meta tags -->
     <meta name="mobile-web-app-capable" content="yes" />
@@ -27,7 +110,6 @@
 
     <!-- Feature detection and fallback -->
     <script>
-        // Check for required features
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             document.body.innerHTML = '<div class="error-message">' +
                 'Your browser does not support camera access. ' +
@@ -35,27 +117,28 @@
                 '</div>';
         }
     </script>
-
-    <!-- Immediate resource initialization -->
     <script>
-        // Immediately start loading resources after page load
         window.addEventListener('load', () => {
+            if (!window.MODEL_PATHS) {
+                console.error('Model paths not initialized');
+                return;
+            }
+
             Promise.all([
-                fetch('/models/rphys/config.json', {
+                fetch(`${window.MODEL_PATHS.rphys}config.json`, {
                     cache: 'force-cache',
                     credentials: 'same-origin'
                 }),
-                fetch('/models/rphys/SCAMPS_Multi_72x72.onnx', {
+                fetch(`${window.MODEL_PATHS.rphys}SCAMPS_Multi_72x72.onnx`, {
                     cache: 'force-cache',
                     credentials: 'same-origin'
                 }),
-                fetch('/models/face-api/tiny_face_detector_model-weights_manifest.json', {
+                fetch(`${window.MODEL_PATHS.rphys}SCAMPS_Multi_9x9.onnx`, {
                     cache: 'force-cache',
                     credentials: 'same-origin'
                 })
             ]).catch(error => {
                 console.warn('Resource pre-loading encountered an error:', error);
-                // Main app will handle proper error display
             });
         });
     </script>
