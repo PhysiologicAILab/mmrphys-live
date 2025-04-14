@@ -3,10 +3,10 @@
 # Clear the npm cache
 npm cache clean --force
 
-file="package-lock.json"
-if [ -f "$file" ] ; then
-    rm "$file"
-fi
+# file="package-lock.json"
+# if [ -f "$file" ] ; then
+#     rm "$file"
+# fi
 
 # Run the setup script
 npm run setup
