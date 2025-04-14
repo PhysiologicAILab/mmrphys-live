@@ -56,7 +56,7 @@ function wasmContentTypePlugin(): Plugin {
 // Determine base path dynamically
 function getGitHubPagesBase() {
     // For GitHub Pages, use an empty string when deploying to CDN
-    return process.env.GITHUB_PAGES === 'true' ? '' : '/mmrphys-live/';
+    return process.env.GITHUB_PAGES === 'true' ? '/mmrphys-live/' : '';
 }
 
 export default defineConfig({
