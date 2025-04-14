@@ -20,7 +20,7 @@ function wasmContentTypePlugin(): Plugin {
 // Determine base path dynamically
 function getGitHubPagesBase() {
     // For GitHub Pages, use an empty string when deploying to CDN
-    return process.env.GITHUB_PAGES === 'true' ? '' : '/';
+    return process.env.GITHUB_PAGES === 'true' ? '' : '/mmrphys-live/';
 }
 
 export default defineConfig({
@@ -35,22 +35,10 @@ export default defineConfig({
         }
     },
     build: {
+        target: 'esnext',
         outDir: 'dist',
         assetsDir: 'assets',
-        sourcemap: true,
-        rollupOptions: {
-            output: {
-                assetFileNames: (assetInfo) => {
-                    // Preserve paths for model-specific files
-                    if (/\.(wasm|onnx|json|model)$/.test(assetInfo.name || '')) {
-                        return `${assetInfo.name}`;
-                    }
-                    return 'assets/[name]-[hash][extname]';
-                },
-                chunkFileNames: 'assets/[name]-[hash].js',
-                entryFileNames: 'assets/[name]-[hash].js',
-            }
-        }
+        sourcemap: true
     },
     optimizeDeps: {
         exclude: ['onnxruntime-web']
