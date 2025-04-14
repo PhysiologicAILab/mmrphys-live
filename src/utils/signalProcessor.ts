@@ -1,5 +1,6 @@
 import { ExportData } from '../types';
-import { SignalFilters, SignalAnalyzer, SignalMetrics } from './signalAnalysis';
+import { SignalAnalyzer, SignalMetrics } from './signalAnalysis';
+import { ButterworthFilter } from './butterworthFilter';
 
 export interface SignalBuffer {
     raw: number[];
@@ -30,8 +31,9 @@ export class SignalProcessor {
     private readonly DISPLAY_SAMPLES_RESP = 450; // 450 samples for Resp
     private readonly MAX_BUFFER = 1800;          // 1800 samples maximum buffer size
 
-    private bvpBandpassFilter: SignalFilters;
-    private respBandpassFilter: SignalFilters;
+    // ButterworthFilter Vandpass Filters
+    private bvpFilter: ButterworthFilter;
+    private respFilter: ButterworthFilter;
 
     // Moving average window sizes for different signals
     private BVP_Mean: number = 0;
@@ -73,9 +75,9 @@ export class SignalProcessor {
         this.bvpBuffer = this.createBuffer();
         this.respBuffer = this.createBuffer();
 
-        // Bandpass filters for BVP and Resp signals
-        this.bvpBandpassFilter = new SignalFilters("bvp", this.fps);    //supports only 30 and 25 fps
-        this.respBandpassFilter = new SignalFilters("resp", this.fps);  //supports only 30 and 25 fps
+        // Initialize stateful Butterworth filters
+        this.bvpFilter = new ButterworthFilter(ButterworthFilter.designBandpass("bvp", this.fps));
+        this.respFilter = new ButterworthFilter(ButterworthFilter.designBandpass("resp", this.fps))
     }
 
     private createBuffer(): SignalBuffer {
@@ -335,6 +337,7 @@ export class SignalProcessor {
         return this.displayRespRate;
     }
 
+    // Simple concatenation
     private updateBuffer(buffer: SignalBuffer, newSignal: number[], type: 'heart' | 'resp'): void {
         // Add new signals to raw buffer
         buffer.raw.push(...newSignal);
@@ -349,51 +352,21 @@ export class SignalProcessor {
         this.enforceBufferSize(buffer);
     }
 
+    // Modified processSegment to use stateful filtering
     private processSegment(signal: number[], type: 'heart' | 'resp'): number[] {
-        // // Step 1: Remove DC component
-        // const dcRemoved = SignalAnalyzer.removeDC(signal);
+        // Apply DC removal first (pre-processing)
+        const dcRemoved = signal.map(val => {
+            const meanVal = type === 'heart' ? this.BVP_Mean : this.RESP_Mean;
+            return val - meanVal;
+        });
 
-        // // Step 2: Apply additional smoothing for respiratory signal
-        // const smoothed = type === 'resp' ?
-        //     this.applySmoothingFilter(dcRemoved, this.RESP_MA_WINDOW) :
-        //     this.applySmoothingFilter(dcRemoved, this.BVP_MA_WINDOW);
-
-        let smoothed: number[] = [];
-        // Step 2: Apply bandpass filter
+        // Use appropriate stateful filter
         if (type === 'heart') {
-            // const dcRemoved = signal.map(val => val - this.BVP_Mean);
-            // smoothed = this.applySmoothingFilter(dcRemoved, this.BVP_MA_WINDOW);
-            smoothed = this.bvpBandpassFilter.applyButterworthBandpass(signal)
+            // Use ButterworthFilter.processSignal which maintains filter state between calls
+            return this.bvpFilter.applyButterworthBandpass(dcRemoved);
         } else {
-            // const dcRemoved = signal.map(val => val - this.RESP_Mean);
-            // smoothed = this.applySmoothingFilter(dcRemoved, this.RESP_MA_WINDOW)
-            smoothed = this.respBandpassFilter.applyButterworthBandpass(signal);
+            return this.respFilter.applyButterworthBandpass(dcRemoved);
         }
-
-        // // Handle NaN or Infinity values
-        // return smoothed.map(val => isFinite(val) ? val : 0);
-        return smoothed;
-    }
-
-    private applySmoothingFilter(signal: number[], windowSize: number): number[] {
-        if (signal.length < windowSize) return signal;
-
-        const result = new Array(signal.length);
-
-        // Use moving average for smoothing
-        for (let i = 0; i < signal.length; i++) {
-            const halfWindow = Math.floor(windowSize / 2);
-            const start = Math.max(0, i - halfWindow);
-            const end = Math.min(signal.length - 1, i + halfWindow);
-
-            let sum = 0;
-            for (let j = start; j <= end; j++) {
-                sum += signal[j];
-            }
-            result[i] = sum / (end - start + 1);
-        }
-
-        return result;
     }
 
     private enforceBufferSize(buffer: SignalBuffer): void {
@@ -626,6 +599,7 @@ export class SignalProcessor {
     /**
      * Reset all buffers and state when starting a new capture session
      */
+    // Modified reset method to also reset filter states
     reset(): void {
         // Reset all buffers and state variables
         this.bvpBuffer = this.createBuffer();
@@ -637,6 +611,15 @@ export class SignalProcessor {
         this.respRateHistory = [];
         this.displayHeartRate = 0;
         this.displayRespRate = 0;
+
+        // Reinitialize filters with fresh states
+        this.bvpFilter = new ButterworthFilter(
+            ButterworthFilter.designBandpass("bvp", this.fps)
+        );
+        this.respFilter = new ButterworthFilter(
+            ButterworthFilter.designBandpass("resp", this.fps)
+        );
+
         console.log('[SignalProcessor] All buffers and state reset');
     }
 }

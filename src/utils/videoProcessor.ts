@@ -31,6 +31,9 @@ export class VideoProcessor {
     private readonly FPS_WINDOW_SIZE = 30; // Calculate FPS over 30 frames
     private newFramesBuffer: ImageData[] = [];
     private _isShuttingDown = false;
+    private readonly FACE_DISTANCE_THRESHOLD = 0.15; // 15% of frame width threshold
+    private faceBoxHistory: FaceBox[] = [];
+    private readonly FACE_HISTORY_SIZE = 5;
 
     constructor() {
         // Initialize video element
@@ -201,14 +204,46 @@ export class VideoProcessor {
         }
     }
 
+    private shouldUpdateFaceBox(newFaceBox: FaceBox): boolean {
+        if (!this.currentFaceBox) return true;
+
+        // Calculate normalized distance between centers
+        const oldCenterX = this.currentFaceBox.x + this.currentFaceBox.width / 2;
+        const oldCenterY = this.currentFaceBox.y + this.currentFaceBox.height / 2;
+        const newCenterX = newFaceBox.x + newFaceBox.width / 2;
+        const newCenterY = newFaceBox.y + newFaceBox.height / 2;
+
+        const distanceX = Math.abs(newCenterX - oldCenterX) / this.frameWidth;
+        const distanceY = Math.abs(newCenterY - oldCenterY) / this.frameHeight;
+        const distance = Math.sqrt(distanceX * distanceX + distanceY * distanceY);
+
+        // Only update if movement is significant
+        return distance > this.FACE_DISTANCE_THRESHOLD;
+    }    
+
     private async updateFaceDetection(): Promise<void> {
-        // Replace time-based detection with frame-count-based detection
         this.faceDetectionFrameCounter++;
 
         if (this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES) {
             try {
                 const detectedFace = await this.faceDetector.detectFace(this.videoElement);
-                this.currentFaceBox = detectedFace;
+
+                if (detectedFace) {
+                    // Only update if face moved significantly or we have few history entries
+                    if (this.shouldUpdateFaceBox(detectedFace) || this.faceBoxHistory.length < 3) {
+                        // Add to history
+                        this.faceBoxHistory.push(detectedFace);
+                        if (this.faceBoxHistory.length > this.FACE_HISTORY_SIZE) {
+                            this.faceBoxHistory.shift();
+                        }
+
+                        // Update current face box with median values from history
+                        if (this.faceBoxHistory.length > 0){
+                            this.currentFaceBox = this.getMedianFaceBox();
+                        }
+                    }
+                }
+
                 // Reset counter after detection
                 this.faceDetectionFrameCounter = 0;
             } catch (error) {
@@ -216,6 +251,30 @@ export class VideoProcessor {
             }
         }
     }
+
+    private getMedianFaceBox(): FaceBox {
+        if (this.faceBoxHistory.length === 1) return this.faceBoxHistory[0];
+
+        // Extract arrays of each parameter
+        const xValues = this.faceBoxHistory.map(box => box.x);
+        const yValues = this.faceBoxHistory.map(box => box.y);
+        const widthValues = this.faceBoxHistory.map(box => box.width);
+        const heightValues = this.faceBoxHistory.map(box => box.height);
+
+        // Get median of each parameter
+        return {
+            x: this.getMedian(xValues),
+            y: this.getMedian(yValues),
+            width: this.getMedian(widthValues),
+            height: this.getMedian(heightValues)
+        };
+    }
+
+    private getMedian(values: number[]): number {
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    }    
 
     private getCropRegion(): { x: number; y: number; width: number; height: number } {
         if (this.currentFaceBox) {
