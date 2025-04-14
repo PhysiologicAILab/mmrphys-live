@@ -24,6 +24,22 @@ const App: React.FC = () => {
     // Device capabilities hook
     const { capabilities, isChecking } = useDeviceCapabilities();
 
+    // Add frame collection state
+    const frameCollectionRef = useRef<{
+        frames: ImageData[];
+        initialCollectionComplete: boolean;
+        framesSinceLastInference: number;
+    }>({
+        frames: [],
+        initialCollectionComplete: false,
+        framesSinceLastInference: 0
+    });
+
+    // Constants for frame collection strategy
+    const INITIAL_FRAMES = 181;
+    const SUBSEQUENT_FRAMES = 121;
+    const OVERLAP_FRAMES = INITIAL_FRAMES - SUBSEQUENT_FRAMES; // 60 
+   
     // Vital signs management hook
     const {
         vitalSigns,
@@ -207,22 +223,37 @@ const App: React.FC = () => {
     // Handler for export results
     const handleExportResults = (event: MessageEvent) => {
         if (event.data.status === 'success') {
-            // Create blob and trigger download
+            console.log('[App] Export data received from worker, triggering download');
+
+            // Create a download link
             const blob = new Blob([event.data.data], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `vital-signs-${new Date().toISOString()}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+
+            // Create link element to trigger download
+            const link = document.createElement('a');
+            link.href = url;
+
+            // Generate filename with timestamp
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            link.download = `vital-signs-${timestamp}.json`;
+
+            // Trigger download
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // Clean up
             URL.revokeObjectURL(url);
 
+            setExporting(false);
             setStatusMessage({
-                message: 'Data exported successfully',
+                message: 'Data exported successfully!',
                 type: 'success'
             });
         } else {
+            // Handle error
+            console.error('[App] Export error:', event.data.error);
+            setExporting(false);
             setStatusMessage({
                 message: `Export failed: ${event.data.error}`,
                 type: 'error'
@@ -277,6 +308,13 @@ const App: React.FC = () => {
             return;
         }
 
+        // Reset frame collection state
+        frameCollectionRef.current = {
+            frames: [],
+            initialCollectionComplete: false,
+            framesSinceLastInference: 0
+        };
+
         // Force local monitoring state regardless of React state
         let isMonitoringActive = true;
 
@@ -303,22 +341,75 @@ const App: React.FC = () => {
 
             // Update buffer progress UI
             if (videoProcessorRef.current) {
-                const progress = videoProcessorRef.current.getBufferUsagePercentage();
-                setBufferProgress(progress >= 100 ? 100 : progress);
+                // Get new frames since last check
+                const newFrames = videoProcessorRef.current.getNewFrames();
 
-                // Only send frames for inference if we have enough and the worker is ready
-                if (videoProcessorRef.current.hasMinimumFrames() && inferenceWorkerRef.current) {
-                    const frameBuffer = videoProcessorRef.current.getFrameBuffer();
-                    console.log(`[App] Sending ${frameBuffer.length} frames to worker for inference`);
-                    inferenceWorkerRef.current.postMessage({
-                        type: 'inferenceResult',
-                        frameBuffer,
-                        timestamp: window.performance.now()
-                    });
+                if (newFrames && newFrames.length > 0) {
+                    const { frames, initialCollectionComplete, framesSinceLastInference } = frameCollectionRef.current;
+
+                    // Add new frames to collection
+                    frames.push(...newFrames);
+                    frameCollectionRef.current.framesSinceLastInference += newFrames.length;
+
+                    // Calculate and update progress
+                    const targetFrames = initialCollectionComplete ? SUBSEQUENT_FRAMES : INITIAL_FRAMES;
+                    const progress = Math.min(100, (framesSinceLastInference / targetFrames) * 100);
+                    
+                    if (!initialCollectionComplete) {
+                        setBufferProgress(progress);
+                    }
+                    else {
+                        setBufferProgress(100);
+                    }
+
+                    // console.log(`[App] Collected ${framesSinceLastInference}/${targetFrames} frames (${progress.toFixed(1)}%)`);
+                
+                    // Check if we have enough frames for inference
+                    if (!initialCollectionComplete && frames.length >= INITIAL_FRAMES) {
+                        // Initial collection complete - send all frames
+                        // console.log(`[App] Initial collection complete: ${frames.length} frames`);
+                        
+                        if (inferenceWorkerRef.current) {
+                            inferenceWorkerRef.current.postMessage({
+                                type: 'inferenceResult',
+                                frameBuffer: frames.slice(-INITIAL_FRAMES), // Send last 181 frames
+                                timestamp: window.performance.now(),
+                                isInitialBatch: true
+                            });
+                        }
+
+                        // Update collection state
+                        frameCollectionRef.current.initialCollectionComplete = true;
+                        frameCollectionRef.current.framesSinceLastInference = 0;
+
+                        // Keep only the overlap frames for next batch
+                        frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
+
+                    } else if (initialCollectionComplete && framesSinceLastInference >= SUBSEQUENT_FRAMES) {
+                        // Subsequent collection complete - we need to send overlapping frames plus new frames
+                        // console.log(`[App] Subsequent collection complete: ${frames.length} frames total, ${framesSinceLastInference} new`);
+                        
+                        if (inferenceWorkerRef.current) {
+                            // Send overlap frames + new frames (total should be INITIAL_FRAMES)
+                            inferenceWorkerRef.current.postMessage({
+                                type: 'inferenceResult',
+                                frameBuffer: frames.slice(-INITIAL_FRAMES),
+                                timestamp: window.performance.now(),
+                                isInitialBatch: false
+                            });
+                        }
+
+                        // Reset counter and keep overlap
+                        frameCollectionRef.current.framesSinceLastInference = 0;
+
+                        // Keep only the overlap frames for next batch
+                        frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
+                    }
                 }
             }
         }, 100);
     }, [isInitialized]); // Add isInitialized to dependency array
+
 
     // Start capture handler
     const handleStartCapture = useCallback(async () => {
@@ -468,48 +559,7 @@ const App: React.FC = () => {
             inferenceWorkerRef.current.postMessage({
                 type: 'exportData'
             });
-
-            // Set up a listener for the export data response
-            const exportPromise = new Promise((resolve, reject) => {
-                const timeoutId = setTimeout(() => {
-                    reject(new Error('Export data request timed out'));
-                }, 10000); // 10 second timeout
-
-                const handleMessage = (e: MessageEvent) => {
-                    if (e.data.type === 'exportData') {
-                        clearTimeout(timeoutId);
-                        self.removeEventListener('message', handleMessage);
-
-                        if (e.data.status === 'success') {
-                            resolve(e.data.data);
-                        } else {
-                            reject(new Error(e.data.error || 'Failed to export data'));
-                        }
-                    }
-                };
-
-                self.addEventListener('message', handleMessage);
-            });
-
-            // Wait for the data
-            const exportData = await exportPromise;
-
-            // Generate and download the file
-            const dataStr = JSON.stringify(exportData, null, 2);
-            const dataBlob = new Blob([dataStr], { type: 'application/json' });
-            const url = URL.createObjectURL(dataBlob);
-
-            const downloadLink = document.createElement('a');
-            downloadLink.href = url;
-            downloadLink.download = `vital-signs-${new Date().toISOString().slice(0, 19)}.json`;
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            document.body.removeChild(downloadLink);
-
-            setStatusMessage({
-                message: 'Data exported successfully!',
-                type: 'success'
-            });
+            console.log('[App] Export data request sent to worker');
         } catch (error) {
             console.error('Export error:', error);
             setStatusMessage({

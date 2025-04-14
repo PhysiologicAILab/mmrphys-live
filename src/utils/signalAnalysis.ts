@@ -12,6 +12,94 @@ export interface SignalMetrics {
     quality: SignalQuality;
 }
 
+//     // Apply appropriate bandpass filter based on signal type
+//     public applySignalFilter(signal: number[], fs: number, type: 'heart' | 'resp'): number[] {
+//     if (signal.length === 0) return [];
+
+//     // Select filter parameters based on signal type
+//     if (type === 'heart') {
+//         // BVP: 0.6 Hz to 3.3 Hz
+//         return this.applyButterworthBandpass(signal, 0.6, 3.3, fs);
+//     } else {
+//         // Respiratory: 0.1 Hz to 0.54 Hz
+//         return this.applyButterworthBandpass(signal, 0.1, 0.54, fs);
+//     }
+// }
+
+
+export class SignalFilters {
+
+    private a: number[] = [];
+    private b: number[] = [];
+
+    constructor(lowCutoff: number, highCutoff: number, fs: number) {
+        this.designButterworth(lowCutoff, highCutoff, fs);
+    }
+
+
+    // Design a 2nd order Butterworth bandpass filter
+    private designButterworth(lowCutoff: number, highCutoff: number, fs: number): void {
+        // Normalize frequencies to Nyquist frequency
+        const nyquist = fs / 2;
+        const wLow = Math.tan((Math.PI * lowCutoff) / nyquist);
+        const wHigh = Math.tan((Math.PI * highCutoff) / nyquist);
+
+        // Calculate filter coefficients
+        const K = 1 / (wHigh - wLow);
+
+        // Second-order section coefficients
+        const b0 = K * (wHigh - wLow);
+        const b1 = 0;
+        const b2 = -b0;
+
+        const a0 = 1 + K * (wHigh - wLow) + (wHigh * wLow * K * K);
+        const a1 = 2 * (wHigh * wLow * K * K - 1);
+        const a2 = 1 - K * (wHigh - wLow) + (wHigh * wLow * K * K);
+
+        // Normalize coefficients
+        this.b = [b0 / a0, b1 / a0, b2 / a0];
+        this.a = [1, a1 / a0, a2 / a0]; 
+    }    
+
+    // Simple 1D filter (lfilter equivalent)
+    private lfilter(signal: number[]): number[] {
+        const result = new Array(signal.length).fill(0);
+        const x = [...signal];
+        const y = [...result];
+
+        for (let i = 0; i < signal.length; i++) {
+            y[i] = this.b[0] * x[i];
+
+            // Add input history
+            for (let j = 1; j < this.b.length && i - j >= 0; j++) {
+                y[i] += this.b[j] * x[i - j];
+            }
+
+            // Subtract output history
+            for (let j = 1; j < this.a.length && i - j >= 0; j++) {
+                y[i] -= this.a[j] * y[i - j];
+            }
+        }
+
+        return y;
+    }
+
+    // Apply forward-backward zero-phase filter (filtfilt equivalent)
+    public applyButterworthBandpass(signal: number[]): number[] {
+        if (signal.length === 0) return [];
+
+        // Forward filter
+        const forwardFiltered = this.lfilter(signal);
+
+        // Reverse and filter again
+        const reversed = [...forwardFiltered].reverse();
+        const backwardFiltered = this.lfilter(reversed);
+
+        // Reverse again to get zero-phase result
+        return backwardFiltered.reverse();
+    }
+}
+
 export class SignalAnalyzer {
     private static readonly FREQ_RANGES = {
         heart: {
@@ -20,7 +108,7 @@ export class SignalAnalyzer {
         },
         resp: {
             minFreq: 0.1,   // 6 breaths/minute
-            maxFreq: 0.5    // 30 breaths/minute
+            maxFreq: 0.54    // 32 breaths/minute
         }
     };
 
@@ -32,7 +120,7 @@ export class SignalAnalyzer {
         },
         resp: {
             min: 6,
-            max: 30,
+            max: 32,
             default: 15
         }
     };
@@ -42,6 +130,7 @@ export class SignalAnalyzer {
      */
     public static analyzeSignal(
         signal: number[],
+        raw: number[],
         samplingRate: number,
         type: 'heart' | 'resp'
     ): SignalMetrics {
@@ -54,28 +143,16 @@ export class SignalAnalyzer {
             // Apply specific preprocessing for heart rate vs respiratory signals
             let processedSignal = [...signal];
 
-            // Check signal variance - flat signals will cause problems
-            const variance = this.calculateVariance(processedSignal);
-            if (variance < 1e-6) {
-                console.log(`${type}: Signal variance too low (${variance.toFixed(8)}), using default metrics`);
-                return this.getDefaultMetrics(type);
-            }
-
             // Step 1: Remove DC component
             processedSignal = this.removeDC(processedSignal);
 
-            // Step 2: Apply moving average filter
-            // Different window sizes for heart rate and respiratory signals
-            const windowSize = type === 'heart' ? Math.ceil(samplingRate * 0.15) : Math.ceil(samplingRate * 0.4);
-            processedSignal = this.applyMovingAverage(processedSignal, windowSize);
-
-            // Step 3: Apply windowing function to reduce spectral leakage
+            // Step 2: Apply windowing function to reduce spectral leakage
             const windowed = this.applyWindow(processedSignal);
 
-            // Step 4: Compute FFT
+            // Step 3: Compute FFT
             const fftResult = this.computeFFT(windowed);
 
-            // Step 5: Find dominant frequency
+            // Step 4: Find dominant frequency
             const { minFreq, maxFreq } = this.FREQ_RANGES[type];
             const peakFreq = this.findDominantFrequency(fftResult, samplingRate, minFreq, maxFreq);
 
@@ -84,7 +161,7 @@ export class SignalAnalyzer {
             console.log(`${type}: Calculated rate before validation: ${rate.toFixed(1)}`);
 
             // Assess signal quality
-            const quality = this.assessSignalQuality(processedSignal);
+            const quality = this.assessSignalQuality(processedSignal, raw);
 
             // Validate rate
             const validatedRate = this.validateRate(rate, type, quality);
@@ -97,39 +174,6 @@ export class SignalAnalyzer {
             console.warn(`Signal analysis error for ${type}:`, error);
             return this.getDefaultMetrics(type);
         }
-    }
-
-    /**
-     * Apply simple moving average filter
-     */
-    public static applyMovingAverage(signal: number[], windowSize: number): number[] {
-        if (signal.length < windowSize || windowSize < 2) return [...signal];
-
-        const halfWindow = Math.floor(windowSize / 2);
-        const result = new Array(signal.length);
-
-        for (let i = 0; i < signal.length; i++) {
-            let sum = 0;
-            let count = 0;
-
-            for (let j = Math.max(0, i - halfWindow); j <= Math.min(signal.length - 1, i + halfWindow); j++) {
-                if (isFinite(signal[j])) {
-                    sum += signal[j];
-                    count++;
-                }
-            }
-
-            result[i] = count > 0 ? sum / count : signal[i];
-        }
-
-        return result;
-    }
-
-    // Helper method to calculate signal variance
-    private static calculateVariance(signal: number[]): number {
-        if (!signal.length) return 0;
-        const mean = signal.reduce((sum, val) => sum + val, 0) / signal.length;
-        return signal.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / signal.length;
     }
 
     // Zero-padding for better FFT frequency resolution
@@ -178,9 +222,32 @@ export class SignalAnalyzer {
 
         return constrainedRate;
     }
+    
+    /**
+     * Calculate Signal-to-Noise Ratio in dB
+     */
+    private static calculateSNR(signal: number[], raw: number[]): number {
+        const signalPower = this.calculatePower(signal);
+
+        // Calculate noise as the difference between raw and filtered signals
+        const noise = raw.map((val, i) => val - signal[i]);
+        const noisePower = this.calculatePower(noise);
+
+        // Handle zero noise power
+        if (noisePower === 0) {
+            console.warn('Noise power is zero, setting SNR to a minimum threshold');
+            return 0.01; // Minimum SNR threshold
+        }
+
+        return 10 * Math.log10(signalPower / noisePower);
+    }
+
+    private static calculatePower(signal: number[]): number {
+        return signal.reduce((sum, val) => sum + val * val, 0) / signal.length;
+    }
 
     // Update the assessSignalQuality method to properly calculate SNR
-    private static assessSignalQuality(signal: number[]): SignalMetrics['quality'] {
+    private static assessSignalQuality(signal: number[], raw: number[]): SignalMetrics['quality'] {
         if (signal.length < 30) {
             return {
                 snr: 0,
@@ -191,22 +258,9 @@ export class SignalAnalyzer {
         }
 
         try {
-            // Apply windowing for spectral analysis
-            const windowedSignal = this.applyWindow(signal);
-            const fft = this.computeFFT(windowedSignal);
 
-            // Calculate power in physiological band vs noise band
-            const physiologicalBandPower = this.calculateInBandPower(fft, 0.5, 3.0);
-            const totalPower = this.calculateTotalPower(fft);
-            const noisePower = Math.max(totalPower - physiologicalBandPower, 1e-10);
-
-            // Calculate SNR with better bounds checking
-            let snr = 0;
-            if (physiologicalBandPower > 0 && noisePower > 0) {
-                snr = 10 * Math.log10(physiologicalBandPower / noisePower);
-                // Ensure reasonable SNR range
-                snr = Math.max(0, Math.min(snr, 40));
-            }
+            // Calculate SNR using the improved method
+            const snr = this.calculateSNR(signal, raw);
 
             // Calculate signal strength using RMS
             const rms = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
@@ -242,37 +296,6 @@ export class SignalAnalyzer {
                 artifactRatio: 1
             };
         }
-    }
-
-    // Make sure the calculateInBandPower and calculateTotalPower methods are working correctly
-    private static calculateInBandPower(fft: { real: number[], imag: number[] }, minFreq: number, maxFreq: number): number {
-        const n = fft.real.length;
-        let power = 0;
-
-        // Ensure we don't exceed array bounds
-        for (let i = 0; i < Math.min(n / 2, fft.real.length); i++) {
-            const freq = i / n;
-            if (freq >= minFreq && freq <= maxFreq) {
-                const re = isFinite(fft.real[i]) ? fft.real[i] : 0;
-                const im = isFinite(fft.imag[i]) ? fft.imag[i] : 0;
-                power += re * re + im * im;
-            }
-        }
-
-        return Math.max(power, 1e-10); // Ensure power is never exactly zero
-    }
-
-    private static calculateTotalPower(fft: { real: number[], imag: number[] }): number {
-        const n = Math.min(fft.real.length, fft.imag.length);
-        let power = 0;
-
-        for (let i = 0; i < n / 2; i++) {
-            const re = isFinite(fft.real[i]) ? fft.real[i] : 0;
-            const im = isFinite(fft.imag[i]) ? fft.imag[i] : 0;
-            power += re * re + im * im;
-        }
-
-        return Math.max(power, 1e-10); // Ensure power is never exactly zero
     }
 
     // Simple DC removal

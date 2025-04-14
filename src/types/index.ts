@@ -17,7 +17,7 @@ export interface SignalData {
     snr: number;
 }
 
-export interface RateData {
+export interface RatePoint {
     timestamp: string;
     value: number;
     snr: number;
@@ -137,8 +137,8 @@ export interface ExportData {
         }
     };
     rates: {
-        heart: RateData[];
-        respiratory: RateData[];
+        heart: RatePoint[];
+        respiratory: RatePoint[];
     };
     timestamps: string[];
     performance?: PerformanceMetrics;

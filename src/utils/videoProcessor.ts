@@ -29,6 +29,8 @@ export class VideoProcessor {
     private readonly FACE_DETECTION_INTERVAL_FRAMES: number = 3;
     private frameTimestamps: number[] = [];
     private readonly FPS_WINDOW_SIZE = 30; // Calculate FPS over 30 frames
+    private newFramesBuffer: ImageData[] = [];
+    private _isShuttingDown = false;
 
     constructor() {
         // Initialize video element
@@ -233,32 +235,45 @@ export class VideoProcessor {
 
     private startFrameProcessing(): void {
         // Process frames at target FPS
+        this._isShuttingDown = false; // Reset flag when starting
+
         const processFrame = async () => {
+            // First check if we're shutting down
+            if (this._isShuttingDown) {
+                console.log('[VideoProcessor] Aborting frame processing loop - shutdown in progress');
+                return; // Don't request a new frame
+            }
             const now = performance.now();
             if (now - this.lastFrameTime >= this.frameInterval) {
                 // Update face detection if needed
                 await this.updateFaceDetection();
 
                 // Process frame
-                this.captureAndProcessFrame();
+                this.processVideoFrame(now);
                 this.lastFrameTime = now;
             }
-            this.processingFrameId = requestAnimationFrame(processFrame);
+            // Only request next frame if not shutting down
+            if (!this._isShuttingDown) {
+                this.processingFrameId = requestAnimationFrame(processFrame);
+            }
         };
 
         this.processingFrameId = requestAnimationFrame(processFrame);
     }
 
-    private captureAndProcessFrame(): void {
+    private processVideoFrame(timestamp: number): void {
         try {
+            // Immediately exit if we're shutting down
+            if (this._isShuttingDown) {
+                return;
+            }
             if (!this.configLoaded) {
                 console.warn('Attempting to process frame before config is loaded');
                 return;
             }
 
             // Record timestamp for FPS calculation
-            const now = performance.now();
-            this.frameTimestamps.push(now);
+            this.frameTimestamps.push(timestamp);
 
             // Keep the buffer size reasonable
             if (this.frameTimestamps.length > this.FPS_WINDOW_SIZE * 2) {
@@ -272,7 +287,6 @@ export class VideoProcessor {
 
                 // If FPS is consistently too low (below 90% of target), adjust frame interval
                 if (currentFPS > 0 && currentFPS < this.targetFPS * 0.9 && this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
-                    // Reduce frame interval slightly to compensate for browser timing issues
                     const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
                     console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
                     this.frameInterval = newInterval;
@@ -313,8 +327,14 @@ export class VideoProcessor {
                 this.frameHeight
             );
 
-            // Update frame buffer
-            this.updateFrameBuffer(frameData);
+            // Update both frame buffers
+            this.frameBuffer.push(frameData);
+            this.newFramesBuffer.push(frameData);
+
+            // Maintain maximum buffer size for frameBuffer
+            while (this.frameBuffer.length > this.MAX_BUFFER_SIZE) {
+                this.frameBuffer.shift();
+            }
 
             // Update display if needed
             if (this.displayCtx && this.displayCanvas) {
@@ -327,13 +347,6 @@ export class VideoProcessor {
             }
         } catch (error) {
             console.error('Frame processing error:', error);
-        }
-    }
-
-    private updateFrameBuffer(frame: ImageData): void {
-        this.frameBuffer.push(frame);
-        while (this.frameBuffer.length > this.MAX_BUFFER_SIZE) {
-            this.frameBuffer.shift();
         }
     }
 
@@ -368,33 +381,60 @@ export class VideoProcessor {
     }
 
     async stopCapture(): Promise<void> {
-        if (this.processingFrameId) {
+        console.log('[VideoProcessor] Stopping capture - clearing all resources');
+        
+        // Add a flag to immediately prevent new processing
+        this._isShuttingDown = true;
+
+        // Cancel the animation frame loop
+        if (this.processingFrameId !== null) {
             cancelAnimationFrame(this.processingFrameId);
             this.processingFrameId = null;
         }
 
+        // Explicitly tell the face detector to stop
+        this.faceDetector.stopDetection();
+        this.faceDetector.setCapturingState(false);
+
+        // Stop media stream
         if (this.mediaStream) {
             // Stop all tracks in the media stream
-            this.mediaStream.getTracks().forEach(track => track.stop());
+            this.mediaStream.getTracks().forEach(track => {
+                track.stop();
+                console.log('[VideoProcessor] Media track stopped');
+            });
             this.mediaStream = null;
         }
 
         // Reset the video element
-        this.videoElement.srcObject = null;
-        this.videoElement.pause();
-        this.videoElement.removeAttribute('src'); // Clear the source
-        this.videoElement.load(); // Reset the video element
+        if (this.videoElement.srcObject) {
+            this.videoElement.srcObject = null;
+            this.videoElement.pause();
+            this.videoElement.removeAttribute('src');
+            this.videoElement.load();
+            console.log('[VideoProcessor] Video element reset');
+        }
 
         // Clear frame buffer and other state
         this.frameBuffer = [];
+        this.newFramesBuffer = [];
         this.lastFrameTime = 0;
         this.frameCount = 0;
         this.currentFaceBox = null;
+        this.frameTimestamps = [];  // Clear FPS tracking timestamps
 
-        // Do not dispose the face detector; reset its state instead
-        this.faceDetector.stopDetection();
-        this.faceDetector.noDetectionCount = 0; // Reset no-detection counter
+        console.log('[VideoProcessor] Capture stopped, all resources cleared');
     }
+
+    /**
+     * Get new frames captured since last call and clear new frames buffer
+     */
+    public getNewFrames(): ImageData[] {
+        const frames = [...this.newFramesBuffer];
+        this.newFramesBuffer = [];
+        return frames;
+    }
+
 
     getCurrentFaceBox(): FaceBox | null {
         return this.currentFaceBox;
@@ -421,6 +461,7 @@ export class VideoProcessor {
     }
 
     isCapturing(): boolean {
-        return !!this.mediaStream?.active;
+        // Return false if explicitly shutting down or media stream is inactive
+        return !this._isShuttingDown && !!this.mediaStream?.active;
     }
 }

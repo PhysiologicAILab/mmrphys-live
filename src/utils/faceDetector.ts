@@ -35,7 +35,7 @@ export class FaceDetector {
 
     // Failure detection
     public noDetectionCount: number = 0;
-    private readonly MAX_NO_DETECTION_FRAMES: number = 10;
+    private readonly MAX_NO_DETECTION_FRAMES: number = 100;
     private onDetectionStopped: (() => void) | null = null;
 
     // Initial grace period for setup

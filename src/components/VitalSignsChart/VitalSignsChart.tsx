@@ -50,78 +50,94 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     artifactRatio = 0
 }) => {
     // Chart options with proper type safety
-    const chartOptions = useMemo(() => ({
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: {
-            duration: 0
-        },
-        scales: {
-            x: {
-                type: 'linear' as const,
-                display: true,
-                title: {
-                    display: true,
-                    text: 'Time (seconds)'
-                },
-                min: 0,
-                max: 15, // Increased to 15 seconds
-                ticks: {
-                    stepSize: 3 // Show ticks every 3 seconds
-                }
-            },
-            y: {
-                display: true,
-                title: {
-                    display: true,
-                    text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
-                },
-                min: type === 'bvp' ? -0.05 : -0.05,
-                max: type === 'bvp' ? 1.05 : 1.05
-            }
-        },
-        plugins: {
-            legend: {
-                display: false // Hide legend since we're only showing one dataset
-            },
-            tooltip: {
-                enabled: true,
-                mode: 'index' as const,
-                intersect: false,
-                callbacks: {
-                    label: (context: { parsed: { y: number }, datasetIndex: number }) => {
-                        const value = context.parsed.y;
-                        const label = type === 'bvp' ? 'Filtered BVP' : 'Filtered Resp';
-                        return `${label}: ${value.toFixed(3)}`;
-                    }
-                }
-            },
-            title: {
-                display: true,
-                text: [
-                    title,
-                    `${Number(rate).toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
-                    `SNR: ${Number(snr).toFixed(1)} dB`
-                ]
-            }
-        }
-    }), [title, rate, snr, type]);
+    const chartOptions = useMemo(() => {
+        // Different display settings for BVP and Resp
+        const displaySamples = type === 'bvp' ? 300 : 450; // 300 for BVP, 450 for Resp
+        const fps = 30; // Assuming 30 fps
+        const timeWindow = displaySamples / fps; // Time window in seconds
 
-    // Chart data with safety checks - use filtered data for better visualization
-    const chartData = useMemo(() => ({
-        labels: Array.isArray(filteredData || data) ? (filteredData || data).map((_, i) => (i / 30).toFixed(1)) : [],
-        datasets: [
-            {
-                label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
-                data: filteredData || data, // Prioritize filtered data for display
-                borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
-                borderWidth: 1.5,
-                tension: 0.3,
-                fill: false,
-                pointRadius: 0
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {
+                duration: 0
+            },
+            scales: {
+                x: {
+                    type: 'linear' as const,
+                    display: true,
+                    title: {
+                        display: true,
+                        text: 'Time (seconds)'
+                    },
+                    min: 0,
+                    max: timeWindow, // Dynamic time window based on signal type
+                    ticks: {
+                        stepSize: Math.ceil(timeWindow / 5) // 5 ticks on the x-axis
+                    }
+                },
+                y: {
+                    display: true,
+                    title: {
+                        display: true,
+                        text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
+                    },
+                    min: -0.05,
+                    max: 1.05
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false // Hide legend since we're only showing one dataset
+                },
+                tooltip: {
+                    enabled: true,
+                    mode: 'index' as const,
+                    intersect: false,
+                    callbacks: {
+                        label: (context: { parsed: { y: number }, datasetIndex: number }) => {
+                            const value = context.parsed.y;
+                            const label = type === 'bvp' ? 'Filtered BVP' : 'Filtered Resp';
+                            return `${label}: ${value.toFixed(3)}`;
+                        }
+                    }
+                },
+                title: {
+                    display: true,
+                    text: [
+                        title,
+                        `${Number(rate).toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
+                        `SNR: ${Number(snr).toFixed(1)} dB`
+                    ]
+                }
             }
-        ]
-    }), [data, filteredData, type]);
+        };
+    }, [title, rate, snr, type]);
+
+    // Chart data with x-axis adjusted for display samples
+    const chartData = useMemo(() => {
+        if (!Array.isArray(filteredData || data) || (filteredData || data).length === 0) {
+            return { labels: [], datasets: [] };
+        }
+
+        const displayData = filteredData || data;
+        const fps = 30; // Assuming 30 fps
+
+        return {
+            labels: displayData.map((_, i) => (i / fps).toFixed(1)),
+            datasets: [
+                {
+                    label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
+                    data: displayData,
+                    borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
+                    borderWidth: 1.5,
+                    tension: 0.3,
+                    fill: false,
+                    pointRadius: 0
+                }
+            ]
+        };
+    }, [data, filteredData, type]);
 
     // Loading/empty state
     if (!isReady || !Array.isArray(data) || data.length === 0) {
