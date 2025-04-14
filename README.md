@@ -1,4 +1,4 @@
-# mmrphys.github.io
+# mmrphys-live
 Real Time Remote Physiological Sensing
 
 # Video-based Vital Signs Monitor

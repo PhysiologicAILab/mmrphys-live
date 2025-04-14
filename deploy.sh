@@ -1,21 +1,33 @@
 #!/usr/bin/env sh
 
-# Abort on errors
+# abort on errors
 set -e
 
-# Build the project
+# Set GitHub Pages environment variable
+export GITHUB_PAGES=true
+
+# Ensure clean installation
+rm -rf node_modules
+rm -rf dist
+
+# Install dependencies with explicit version for onnxruntime-web
+npm install
+npm install onnxruntime-web@1.17.0
+
+# build
 npm run build
 
-# Navigate to the build output directory
+# navigate into the build output directory
 cd dist
 
-# If you are deploying to a personal repository
+# Create .nojekyll file to prevent GitHub Pages from ignoring files that begin with an underscore
+touch .nojekyll
+
 git init
 git add -A
 git commit -m 'deploy'
 
-# If deploying to https://<USERNAME>.github.io/<REPO>
-git push -f git@github.com:jnj256/mmrphys.github.io.git main:gh-pages
+# if you are deploying to https://<USERNAME>.github.io/<REPO>
+git push -f git@github.com:PhysiologicAILab/mmrphys-live.git main:gh-pages
 
-# Return to the project root
 cd -
