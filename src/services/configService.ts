@@ -61,24 +61,6 @@ class ConfigService {
         }
     }
 
-    public async getModelPath(): Promise<string> {
-        try {
-            const config = await this.getConfig();
-            // If config has a model_path, use Paths.getModelUrl to get the proper URL
-            if (config.model_path) {
-                return config.model_path.startsWith('http')
-                    ? config.model_path
-                    : Paths.getModelUrl(config.model_path.replace(/^\//, ''));
-            } else {
-                // Use ApplicationPaths.rphysModel for the default
-                return ApplicationPaths.rphysModel();
-            }
-        } catch (error) {
-            console.warn('[ConfigService] Error getting model path, using default:', error);
-            return ApplicationPaths.rphysModel();
-        }
-    }
-
     public async getFrameWidth(): Promise<number> {
         try {
             const config = await this.getConfig();
@@ -148,7 +130,14 @@ class ConfigService {
             const configPath = ApplicationPaths.rphysConfig();
             console.log(`[ConfigService] Loading model configuration from ${configPath}`);
 
-            const response = await fetch(configPath);
+            const response = await fetch(configPath, {
+                cache: 'force-cache',
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
             if (!response.ok) {
                 throw new Error(`Failed to load config: ${response.status} ${response.statusText}`);
             }

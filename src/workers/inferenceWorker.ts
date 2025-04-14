@@ -2,6 +2,7 @@
 /// <reference lib="webworker" />
 
 import * as ort from 'onnxruntime-web';
+import { ApplicationPaths, Paths } from '@/utils/paths';
 import { SignalProcessor } from '../utils/signalProcessor';
 import { configService, ModelConfig } from '../services/configService';
 
@@ -92,10 +93,10 @@ class InferenceWorker {
     private async configureOrtEnvironment(): Promise<void> {
         try {
             ort.env.wasm.wasmPaths = {
-                'ort-wasm.wasm': '/ort/ort-wasm.wasm',
-                'ort-wasm-simd.wasm': '/ort/ort-wasm-simd.wasm',
-                'ort-wasm-threaded.wasm': '/ort/ort-wasm-threaded.wasm',
-                'ort-wasm-simd-threaded.wasm': '/ort/ort-wasm-simd-threaded.wasm'
+                'ort-wasm.wasm': ApplicationPaths.ortWasm('ort-wasm.wasm'),
+                'ort-wasm-simd.wasm': ApplicationPaths.ortWasm('ort-wasm-simd.wasm'),
+                'ort-wasm-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-threaded.wasm'),
+                'ort-wasm-simd-threaded.wasm': ApplicationPaths.ortWasm('ort-wasm-simd-threaded.wasm')
             };
 
             ort.env.wasm.numThreads = 1;
@@ -109,14 +110,14 @@ class InferenceWorker {
     }
 
     private async createSession(): Promise<void> {
-        if (!this.modelConfig || !this.modelConfig.model_path) {
-            throw new Error('Model path not specified in config');
-        }
-
-        const modelPath = this.modelConfig.model_path;
+        const modelPath = ApplicationPaths.rphysModel();
         console.log(`[InferenceWorker] Loading ONNX model from: ${modelPath}`);
 
-        const modelResponse = await fetch(modelPath);
+        const modelResponse = await fetch(modelPath, {
+            cache: 'force-cache',
+            credentials: 'same-origin'
+        });
+
         if (!modelResponse.ok) throw new Error(`Failed to fetch model: ${modelResponse.statusText}`);
 
         const modelArrayBuffer = await modelResponse.arrayBuffer();
