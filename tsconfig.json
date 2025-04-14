@@ -36,7 +36,7 @@
             "path": "./tsconfig.node.json"
         },
         {
-            "path": "./tsconfig.worker.json"
+            "path": "./tsconfig.workers.json"
         }
     ]
 }
