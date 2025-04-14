@@ -1,5 +1,5 @@
 # mmrphys-live
-Real Time Remote Physiological Sensing
+Real Time Remote Physiological Sensing using MMRPhys Model Trained on SCAMPS dataset.
 
 # Video-based Vital Signs Monitor
 
