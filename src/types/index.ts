@@ -73,6 +73,7 @@ export interface ControlsProps {
     onStart: () => void;
     onStop: () => void;
     onExport: () => void;
+    onVideoFileSelected: (event: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
 export type StatusMessage = {

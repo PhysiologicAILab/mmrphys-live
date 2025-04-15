@@ -6,10 +6,27 @@ const Controls: React.FC<ControlsProps> = ({
     isInitialized,
     onStart,
     onStop,
-    onExport
+    onExport,
+    onVideoFileSelected
 }) => {
     return (
         <div className="controls">
+            <button
+                className="control-button"
+                onClick={() => document.getElementById('video-file-input')?.click()}
+                disabled={isCapturing}
+                title="Load video file for analysis"
+            >
+                <span className="button-icon">📁</span>
+                Load Video
+            </button>
+            <input
+                id="video-file-input"
+                type="file"
+                accept="video/*"
+                style={{ display: 'none' }}
+                onChange={onVideoFileSelected}
+            />
             <button
                 className="btn primary"
                 onClick={onStart}

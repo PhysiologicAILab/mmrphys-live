@@ -34,6 +34,8 @@ export class VideoProcessor {
     private readonly FACE_DISTANCE_THRESHOLD = 0.15; // 15% of frame width threshold
     private faceBoxHistory: FaceBox[] = [];
     private readonly FACE_HISTORY_SIZE = 5;
+    private isVideoFileSource: boolean = false;
+    private onVideoComplete: (() => void) | null = null;
 
     constructor() {
         // Initialize video element
@@ -42,6 +44,8 @@ export class VideoProcessor {
         this.videoElement.muted = true;
         this.videoElement.autoplay = true;
 
+        this.setupVideoEventListeners();
+        
         // Initialize canvases with optimized settings
         this.croppedCanvas = this.createOptimizedCanvas(256, 256);
 
@@ -100,6 +104,60 @@ export class VideoProcessor {
         this.croppedCtx.imageSmoothingQuality = 'high';
     }
 
+    async loadVideoFile(file: File): Promise<void> {
+        // Stop any existing capture
+        await this.stopCapture();
+
+        // Set flag to indicate we're using a video file
+        this.isVideoFileSource = true;
+
+        // Create a URL for the file
+        const videoURL = URL.createObjectURL(file);
+
+        // Reset buffers
+        this.frameBuffer = [];
+        this.newFramesBuffer = [];
+        this.frameCount = 0;
+
+        // Set the video element source
+        this.videoElement.src = videoURL;
+        this.videoElement.muted = true;
+
+        // Wait for video metadata to load
+        return new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Video loading timeout'));
+            }, 10000);
+
+            this.videoElement.onloadedmetadata = () => {
+                clearTimeout(timeout);
+
+                // Initialize face detector if needed
+                if (!this.faceDetector.isInitialized) {
+                    this.faceDetector.initialize().then(() => {
+                        // Load config and start processing
+                        this.loadConfigSettings().then(() => {
+                            this.startFrameProcessing();
+                            resolve();
+                        }).catch(reject);
+                    }).catch(reject);
+                } else {
+                    // Just load config and start processing
+                    this.loadConfigSettings().then(() => {
+                        this.startFrameProcessing();
+                        resolve();
+                    }).catch(reject);
+                }
+            };
+
+            this.videoElement.onerror = () => {
+                clearTimeout(timeout);
+                URL.revokeObjectURL(videoURL);
+                reject(new Error('Failed to load video file'));
+            };
+        });
+    }
+
     async startCapture(): Promise<void> {
         try {
             // Clear frame buffer
@@ -113,6 +171,7 @@ export class VideoProcessor {
                 this.onFrameProcessed = null;
             }
 
+            this.isVideoFileSource = false;
             // Load frame dimensions from config
             await this.loadConfigSettings();
 
@@ -292,9 +351,26 @@ export class VideoProcessor {
         }
     }
 
+    private setupVideoEventListeners(): void {
+        this.videoElement.addEventListener('ended', () => {
+            console.log('[VideoProcessor] Video playback complete');
+            // Notify any listeners that processing is complete
+            if (this.onVideoComplete) {
+                this.onVideoComplete();
+            }
+        });
+    }
+
     private startFrameProcessing(): void {
         // Process frames at target FPS
         this._isShuttingDown = false; // Reset flag when starting
+
+        if (this.isVideoFileSource) {
+            // Start playing the video
+            this.videoElement.play().catch(error => {
+                console.error('Failed to play video:', error);
+            });
+        }
 
         const processFrame = async () => {
             // First check if we're shutting down
@@ -303,7 +379,9 @@ export class VideoProcessor {
                 return; // Don't request a new frame
             }
             const now = performance.now();
-            if (now - this.lastFrameTime >= this.frameInterval) {
+
+            // For video files, we don't throttle by frame rate
+            if (this.isVideoFileSource || (now - this.lastFrameTime >= this.frameInterval)) {
                 // Update face detection if needed
                 await this.updateFaceDetection();
 
@@ -311,14 +389,21 @@ export class VideoProcessor {
                 this.processVideoFrame(now);
                 this.lastFrameTime = now;
             }
-            // Only request next frame if not shutting down
-            if (!this._isShuttingDown) {
+
+            // Only request next frame if not shutting down and (for video files) if video is still playing
+            if (!this._isShuttingDown && (!this.isVideoFileSource || !this.videoElement.ended)) {
                 this.processingFrameId = requestAnimationFrame(processFrame);
+            } else if (this.isVideoFileSource && this.videoElement.ended) {
+                console.log('[VideoProcessor] Video playback complete');
             }
         };
 
         this.processingFrameId = requestAnimationFrame(processFrame);
     }
+
+    isVideoComplete(): boolean {
+        return this.isVideoFileSource && this.videoElement.ended;
+    }    
 
     private processVideoFrame(timestamp: number): void {
         try {
@@ -494,6 +579,9 @@ export class VideoProcessor {
         return frames;
     }
 
+    public setOnVideoComplete(callback: () => void): void {
+        this.onVideoComplete = callback;
+    }
 
     getCurrentFaceBox(): FaceBox | null {
         return this.currentFaceBox;
@@ -520,7 +608,13 @@ export class VideoProcessor {
     }
 
     isCapturing(): boolean {
-        // Return false if explicitly shutting down or media stream is inactive
+        // Check if we're using a video file source
+        if (this.isVideoFileSource) {
+            // For video files, we're capturing if not shutting down and video isn't ended
+            return !this._isShuttingDown && !this.videoElement.ended && this.videoElement.readyState >= 2;
+        }
+
+        // For camera capture, check media stream
         return !this._isShuttingDown && !!this.mediaStream?.active;
     }
 }

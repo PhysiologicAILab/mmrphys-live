@@ -226,15 +226,6 @@ const App: React.FC = () => {
         });
     };
 
-    // Handler for initialization errors
-    const handleInitializationError = (error: unknown) => {
-        setStatusMessage({
-            message: `Initialization failed: ${error instanceof Error ? error.message : 'Unknown error'
-                }`,
-            type: 'error'
-        });
-    };
-
     // Start monitoring buffer progress
     const startMonitoring = useCallback(() => {
         if (progressIntervalRef.current) {
@@ -366,6 +357,89 @@ const App: React.FC = () => {
             }
         }, 100);
     }, [isInitialized]); // Add isInitialized to dependency array
+
+
+    // Handler for initialization errors
+    const handleInitializationError = (error: unknown) => {
+        setStatusMessage({
+            message: `Initialization failed: ${error instanceof Error ? error.message : 'Unknown error'
+                }`,
+            type: 'error'
+        });
+    };
+
+
+    // Add this handler function with the other handlers
+    const handleVideoFileSelected = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (!videoProcessorRef.current || !inferenceWorkerRef.current) {
+            setStatusMessage({
+                message: 'System components not ready. Please refresh the page.',
+                type: 'error'
+            });
+            return;
+        }
+
+        const file = event.target.files?.[0];
+        if (!file) {
+            return;
+        }
+
+        try {
+            setStatusMessage({
+                message: 'Loading video file...',
+                type: 'info'
+            });
+
+            // Add a callback for video completion
+            videoProcessorRef.current.setOnVideoComplete(() => {
+                console.log('[App] Video processing complete');
+                setIsCapturing(false);
+                setStatusMessage({
+                    message: 'Video processing complete. Data ready for export.',
+                    type: 'success'
+                });
+            });
+
+            // Reset data and frame collection
+            resetData();
+            frameCollectionRef.current = {
+                frames: [],
+                initialCollectionComplete: false,
+                framesSinceLastInference: 0
+            };
+
+            // Start the worker capture BEFORE loading the video
+            // This is the critical step that was missing
+            console.log('[App] Starting inference worker capture for video processing');
+            inferenceWorkerRef.current.postMessage({
+                type: 'startCapture'
+            });            
+
+            // Load the video file
+            await videoProcessorRef.current.loadVideoFile(file);
+
+            // Set capturing state
+            setIsCapturing(true);
+
+            // Start monitoring
+            startMonitoring();
+
+            setStatusMessage({
+                message: `Processing video: ${file.name}`,
+                type: 'success'
+            });
+        } catch (error) {
+            setIsCapturing(false);
+            setStatusMessage({
+                message: `Failed to load video file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                type: 'error'
+            });
+        }
+
+        // Reset the file input
+        event.target.value = '';
+    }, [resetData, startMonitoring]);
+
 
 
     // Start capture handler
@@ -673,7 +747,8 @@ const App: React.FC = () => {
                     onStart={handleStartCapture}
                     onStop={handleStopCapture}
                     onExport={handleExport}
-                />
+                    onVideoFileSelected={handleVideoFileSelected}
+                    />
 
                 <VideoDisplay
                     videoProcessor={videoProcessorRef.current}
