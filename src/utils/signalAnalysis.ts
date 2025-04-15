@@ -330,12 +330,6 @@ export class SignalAnalyzer {
         const n = fft.real.length;
         const freqResolution = samplingRate / n;
 
-        // Validate FFT input
-        if (fft.real.some(val => !isFinite(val)) || fft.imag.some(val => !isFinite(val))) {
-            console.error("FFT contains non-finite values, returning center frequency");
-            return (minFreq + maxFreq) / 2;
-        }
-
         // Calculate power spectrum
         const powerSpectrum = new Array(Math.floor(n / 2)).fill(0);
         for (let i = 0; i < n / 2; i++) {
@@ -344,27 +338,45 @@ export class SignalAnalyzer {
             powerSpectrum[i] = realVal * realVal + imagVal * imagVal;
         }
 
-        // Find peak in the physiological frequency range
+        // Find peaks in the physiological frequency range
         const minIdx = Math.max(1, Math.floor(minFreq / freqResolution));
         const maxIdx = Math.min(Math.ceil(maxFreq / freqResolution), Math.floor(n / 2) - 1);
 
-        // Find the peak
-        let maxPower = 0;
-        let peakIdx = minIdx;
-
-        for (let i = minIdx; i <= maxIdx; i++) {
-            if (powerSpectrum[i] > maxPower) {
-                maxPower = powerSpectrum[i];
-                peakIdx = i;
+        // Find all significant peaks, not just the highest one
+        const peaks: { idx: number, power: number }[] = [];
+        for (let i = minIdx + 1; i < maxIdx - 1; i++) {
+            if (powerSpectrum[i] > powerSpectrum[i - 1] && powerSpectrum[i] > powerSpectrum[i + 1] &&
+                powerSpectrum[i] > 0.2 * Math.max(...powerSpectrum.slice(minIdx, maxIdx))) {
+                peaks.push({ idx: i, power: powerSpectrum[i] });
             }
         }
 
-        // If no significant peak found, return the center frequency
-        if (maxPower < 1e-6) {
+        if (peaks.length === 0) {
             return (minFreq + maxFreq) / 2;
         }
 
-        // Simple peak frequency calculation
-        return peakIdx * freqResolution;
+        // Sort peaks by power
+        peaks.sort((a, b) => b.power - a.power);
+
+        // Check for harmonic relationships
+        if (peaks.length >= 2) {
+            const topFreq = peaks[0].idx * freqResolution;
+
+            // Check if top peak is likely a harmonic
+            for (let i = 1; i < peaks.length; i++) {
+                const lowerFreq = peaks[i].idx * freqResolution;
+
+                // If top frequency is approximately a multiple of a lower frequency
+                // with significant power, prefer the lower frequency
+                if (Math.abs(topFreq / lowerFreq - Math.round(topFreq / lowerFreq)) < 0.15 &&
+                    peaks[i].power > peaks[0].power * 0.4) {
+                    console.log(`Detected harmonic: ${topFreq.toFixed(2)}Hz appears to be harmonic of ${lowerFreq.toFixed(2)}Hz`);
+                    return lowerFreq;
+                }
+            }
+        }
+
+        // Return the highest peak if no harmonics detected
+        return peaks[0].idx * freqResolution;
     }
 }

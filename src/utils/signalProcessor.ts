@@ -68,8 +68,8 @@ export class SignalProcessor {
         this.fps = fps;
 
         // Set appropriate moving average window sizes based on sampling rate
-        this.BVP_MA_WINDOW = Math.round(0.3 * fps); // 300 ms for heart rate
-        this.RESP_MA_WINDOW = Math.round(1.0 * fps);  // 1000 ms for respiration
+        this.BVP_MA_WINDOW = Math.round(0.35 * fps); // 350 ms for heart rate
+        this.RESP_MA_WINDOW = Math.round(1.5 * fps);  // 1500 ms for respiration
 
         // Initialize buffers
         this.bvpBuffer = this.createBuffer();
@@ -343,10 +343,11 @@ export class SignalProcessor {
         buffer.raw.push(...newSignal);
 
         // Process only the new samples with explicitly provided type
-        const processedSignal = this.processSegment(newSignal, type);
+        // const processedSignal = this.processSegment(newSignal, type);
 
         // Add to filtered buffer
-        buffer.filtered.push(...processedSignal);
+        // buffer.filtered.push(...processedSignal);
+        buffer.filtered.push(...newSignal);
 
         // Maintain maximum buffer size for both buffers together
         this.enforceBufferSize(buffer);
@@ -362,10 +363,15 @@ export class SignalProcessor {
 
         // Use appropriate stateful filter
         if (type === 'heart') {
-            // Use ButterworthFilter.processSignal which maintains filter state between calls
-            return this.bvpFilter.applyButterworthBandpass(dcRemoved);
+            // moving average filter
+            const smoothed = this.bvpFilter.applyMovingAverage(dcRemoved, this.BVP_MA_WINDOW);
+            // const filtered = this.bvpFilter.applyButterworthBandpass(smoothed); // bandpass filter
+            return smoothed
         } else {
-            return this.respFilter.applyButterworthBandpass(dcRemoved);
+            // moving average filter
+            const smoothed = this.respFilter.applyMovingAverage(dcRemoved, this.RESP_MA_WINDOW);
+            // const filtered = this.respFilter.applyButterworthBandpass(smoothed); // bandpass filter
+            return smoothed
         }
     }
 
@@ -497,15 +503,23 @@ export class SignalProcessor {
         // Get the display window of data with appropriate sizes for each signal
         const bvpRawDisplay = this.bvpBuffer.raw.slice(-bvpDisplaySamples);
         const respRawDisplay = this.respBuffer.raw.slice(-respDisplaySamples);
-        const bvpFilteredDisplay = this.bvpBuffer.filtered.slice(-bvpDisplaySamples);
-        const respFilteredDisplay = this.respBuffer.filtered.slice(-respDisplaySamples);
+        const bvpFiltered = this.bvpBuffer.filtered.slice(-bvpDisplaySamples);
+        const respFiltered = this.respBuffer.filtered.slice(-respDisplaySamples);
 
-        this.BVP_Mean = bvpRawDisplay.reduce((sum, val) => sum + val, 0) / bvpRawDisplay.length;
-        this.RESP_Mean = respRawDisplay.reduce((sum, val) => sum + val, 0) / respRawDisplay.length;
+        this.BVP_Mean = bvpFiltered.reduce((sum, val) => sum + val, 0) / bvpFiltered.length;
+        this.RESP_Mean = respFiltered.reduce((sum, val) => sum + val, 0) / respFiltered.length;
+        const bvpMeanRemoved = bvpFiltered.map(val => val - this.BVP_Mean);
+        const respMeanRemoved = respFiltered.map(val => val - this.RESP_Mean);
+
+        const bvpFilteredDisplay = this.bvpFilter.applyButterworthBandpass(bvpMeanRemoved); // bandpass filter
+        const respFilteredDisplay = this.respFilter.applyButterworthBandpass(respMeanRemoved); // bandpass filter
+
+        const bvpMovingAvg = this.bvpFilter.applyMovingAverage(bvpFilteredDisplay, this.BVP_MA_WINDOW);
+        const respMovingAvg = this.respFilter.applyMovingAverage(respFilteredDisplay, this.RESP_MA_WINDOW);
 
         // Min-max normalization for display as specified in requirements
-        const normalizedBVP = this.normalizeForDisplay(bvpFilteredDisplay);
-        const normalizedResp = this.normalizeForDisplay(respFilteredDisplay);
+        const normalizedBVP = this.normalizeForDisplay(bvpMovingAvg);
+        const normalizedResp = this.normalizeForDisplay(respMovingAvg);
 
         console.log(`[SignalProcessor] Display data ready: BVP=${normalizedBVP.length}, RESP=${normalizedResp.length}`);
 
@@ -541,7 +555,7 @@ export class SignalProcessor {
 
         // Apply robust normalization
         return signal.map(val => {
-            return (val - min) / range;
+            return (2 * (val - min) / range) - 1;
         });
     }
 
