@@ -33,8 +33,6 @@ interface VitalSignsChartProps {
     quality?: 'excellent' | 'good' | 'moderate' | 'poor';
     type: 'bvp' | 'resp';
     isReady: boolean;
-    signalStrength?: number;
-    artifactRatio?: number;
 }
 
 const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
@@ -45,9 +43,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
     snr = 0,
     quality = 'poor',
     type = 'bvp',
-    isReady = false,
-    signalStrength = 0,
-    artifactRatio = 0
+    isReady = false
 }) => {
     // Chart options with proper type safety
     const chartOptions = useMemo(() => {
@@ -131,9 +127,11 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     data: displayData,
                     borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
                     borderWidth: 1.5,
-                    tension: 0.3,
+                    tension: 0.4, // Increase tension for smoother curves
+                    cubicInterpolationMode: 'monotone', // Add this for better interpolation
                     fill: false,
-                    pointRadius: 0
+                    pointRadius: 0,
+                    spanGaps: true // Add this to handle any gaps in data
                 }
             ]
         };
@@ -197,17 +195,8 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                         {Number(snr).toFixed(1)} dB
                     </div>
                     <div className="text-sm opacity-75">
-                        {quality.charAt(0).toUpperCase() + quality.slice(1)} Quality
+                        Signal Quality
                     </div>
-                </div>
-            </div>
-            {/* Additional Metrics */}
-            <div className="additional-metrics mt-2 grid grid-cols-2 gap-2 text-xs">
-                <div className="metric">
-                    <strong>Signal Strength:</strong> {signalStrength.toFixed(4)}
-                </div>
-                <div className="metric">
-                    <strong>Artifact Ratio:</strong> {(artifactRatio * 100).toFixed(2)}%
                 </div>
             </div>
         </div>

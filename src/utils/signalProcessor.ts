@@ -503,6 +503,8 @@ export class SignalProcessor {
         // Get the display window of data with appropriate sizes for each signal
         const bvpRawDisplay = this.bvpBuffer.raw.slice(-bvpDisplaySamples);
         const respRawDisplay = this.respBuffer.raw.slice(-respDisplaySamples);
+
+        // Ensure we're using all available samples without downsampling
         const bvpFiltered = this.bvpBuffer.filtered.slice(-bvpDisplaySamples);
         const respFiltered = this.respBuffer.filtered.slice(-respDisplaySamples);
 

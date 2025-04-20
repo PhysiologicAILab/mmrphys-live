@@ -342,41 +342,71 @@ export class SignalAnalyzer {
         const minIdx = Math.max(1, Math.floor(minFreq / freqResolution));
         const maxIdx = Math.min(Math.ceil(maxFreq / freqResolution), Math.floor(n / 2) - 1);
 
-        // Find all significant peaks, not just the highest one
-        const peaks: { idx: number, power: number }[] = [];
+        // Find all significant peaks
+        const peaks: { idx: number, freq: number, power: number }[] = [];
         for (let i = minIdx + 1; i < maxIdx - 1; i++) {
-            if (powerSpectrum[i] > powerSpectrum[i - 1] && powerSpectrum[i] > powerSpectrum[i + 1] &&
-                powerSpectrum[i] > 0.2 * Math.max(...powerSpectrum.slice(minIdx, maxIdx))) {
-                peaks.push({ idx: i, power: powerSpectrum[i] });
+            if (powerSpectrum[i] > powerSpectrum[i - 1] &&
+                powerSpectrum[i] > powerSpectrum[i + 1] &&
+                powerSpectrum[i] > 0.1 * Math.max(...powerSpectrum.slice(minIdx, maxIdx))) {
+                peaks.push({
+                    idx: i,
+                    freq: i * freqResolution,
+                    power: powerSpectrum[i]
+                });
             }
-        }
-
-        if (peaks.length === 0) {
-            return (minFreq + maxFreq) / 2;
         }
 
         // Sort peaks by power
         peaks.sort((a, b) => b.power - a.power);
 
-        // Check for harmonic relationships
+        if (peaks.length === 0) {
+            return (minFreq + maxFreq) / 2;
+        }
+
+        // Improved harmonic detection
         if (peaks.length >= 2) {
-            const topFreq = peaks[0].idx * freqResolution;
+            const topPeak = peaks[0];
 
-            // Check if top peak is likely a harmonic
+            // Look for potential fundamental frequencies
             for (let i = 1; i < peaks.length; i++) {
-                const lowerFreq = peaks[i].idx * freqResolution;
+                const currentPeak = peaks[i];
+                const ratio = topPeak.freq / currentPeak.freq;
 
-                // If top frequency is approximately a multiple of a lower frequency
-                // with significant power, prefer the lower frequency
-                if (Math.abs(topFreq / lowerFreq - Math.round(topFreq / lowerFreq)) < 0.15 &&
-                    peaks[i].power > peaks[0].power * 0.4) {
-                    console.log(`Detected harmonic: ${topFreq.toFixed(2)}Hz appears to be harmonic of ${lowerFreq.toFixed(2)}Hz`);
-                    return lowerFreq;
+                // Check if the top frequency is close to a harmonic (2x, 3x, 4x)
+                const nearestHarmonic = Math.round(ratio);
+                if (nearestHarmonic > 1 && nearestHarmonic <= 4) {  // Check up to 4th harmonic
+                    const harmonicError = Math.abs(ratio - nearestHarmonic);
+
+                    // If this is likely a harmonic (within 10% error)
+                    if (harmonicError < 0.1) {
+                        // Check if the lower frequency has sufficient power (at least 25% of the harmonic)
+                        // and is in the expected physiological range
+                        if (currentPeak.power > topPeak.power * 0.25 &&
+                            currentPeak.freq >= minFreq &&
+                            currentPeak.freq <= maxFreq) {
+                            console.log(`Found likely fundamental frequency: ${currentPeak.freq.toFixed(2)}Hz (harmonic ratio: ${ratio.toFixed(2)})`);
+                            return currentPeak.freq;
+                        }
+                    }
                 }
             }
         }
 
-        // Return the highest peak if no harmonics detected
-        return peaks[0].idx * freqResolution;
+        // If no clear harmonic relationship is found, validate the top peak
+        const topFreq = peaks[0].freq;
+
+        // Additional validation for physiologically unlikely frequencies
+        if (topFreq > maxFreq * 0.8) {  // If frequency is in the upper range
+            // Look for a lower frequency peak with significant power
+            for (const peak of peaks) {
+                if (peak.freq < topFreq * 0.6 && peak.freq >= minFreq &&
+                    peak.power > peaks[0].power * 0.3) {
+                    console.log(`Choosing lower frequency ${peak.freq.toFixed(2)}Hz over high frequency ${topFreq.toFixed(2)}Hz`);
+                    return peak.freq;
+                }
+            }
+        }
+
+        return topFreq;
     }
 }

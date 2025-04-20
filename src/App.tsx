@@ -1,6 +1,6 @@
 // src/App.tsx
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { VideoDisplay, Controls, VitalSignsChart, StatusMessage } from '@/components';
+import { VideoDisplay, Controls, VitalSignsChart, StatusMessage, Banner, Footer } from '@/components';
 import { useDeviceCapabilities } from '@/hooks/useDeviceCapabilities';
 import { useVitalSigns } from '@/hooks/useVitalSigns';
 import { VideoProcessor } from '@/utils/videoProcessor';
@@ -355,7 +355,7 @@ const App: React.FC = () => {
                     }
                 }
             }
-        }, 100);
+        }, 33);
     }, [isInitialized]); // Add isInitialized to dependency array
 
 
@@ -733,14 +733,10 @@ const App: React.FC = () => {
 
     // Main application render
     return (
-        <div className="app-container">
-            <header className="app-header">
-                <h1 className="text-2xl font-bold text-primary mb-4">
-                    Remote Physiological Sensing
-                </h1>
-            </header>
-
-            <main className="app-main">
+        <div className="app-container flex flex-col min-h-screen">
+            <Banner />
+            
+            <main className="app-main flex-grow">
                 <Controls
                     isCapturing={isCapturing}
                     isInitialized={isInitialized}
@@ -748,7 +744,7 @@ const App: React.FC = () => {
                     onStop={handleStopCapture}
                     onExport={handleExport}
                     onVideoFileSelected={handleVideoFileSelected}
-                    />
+                />
 
                 <VideoDisplay
                     videoProcessor={videoProcessorRef.current}
@@ -767,8 +763,6 @@ const App: React.FC = () => {
                         quality={vitalSigns.bvpQuality}
                         type="bvp"
                         isReady={isCapturing && bufferProgress >= 100}
-                        signalStrength={vitalSigns.bvpSignalStrength}
-                        artifactRatio={vitalSigns.bvpArtifactRatio}
                     />
                     <VitalSignsChart
                         title="Respiratory Signal"
@@ -779,8 +773,6 @@ const App: React.FC = () => {
                         quality={vitalSigns.respQuality}
                         type="resp"
                         isReady={isCapturing && bufferProgress >= 100}
-                        signalStrength={vitalSigns.respSignalStrength}
-                        artifactRatio={vitalSigns.respArtifactRatio}
                     />
                 </div>
             </main>
@@ -789,6 +781,8 @@ const App: React.FC = () => {
                 message={statusMessage.message}
                 type={statusMessage.type}
             />
+            
+            <Footer />
         </div>
     );
 };
