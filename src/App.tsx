@@ -753,6 +753,12 @@ const App: React.FC = () => {
                     isCapturing={isCapturing}
                 />
 
+                <div className="text-center my-4">
+                    <p className="text-sm text-gray-500 max-w-2xl mx-auto">
+                        <strong>Note:</strong> Please keep your head still and ensure well-lit environment for better results. The uploaded or captured video remains locally on your device.
+                    </p>
+                </div>
+
                 <div className="charts-section">
                     <VitalSignsChart
                         title="Blood Volume Pulse"
