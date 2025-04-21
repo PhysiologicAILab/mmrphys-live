@@ -390,6 +390,36 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
+            // Reset data and frame collection
+            resetData();
+            frameCollectionRef.current = {
+                frames: [],
+                initialCollectionComplete: false,
+                framesSinceLastInference: 0
+            };
+
+            // EXPLICITLY RESET THE WORKER FIRST and wait for confirmation
+            await new Promise<void>((resolve, reject) => {
+                const resetListener = (e: MessageEvent) => {
+                    if (e.data.type === 'reset' && e.data.status === 'success') {
+                        inferenceWorkerRef.current?.removeEventListener('message', resetListener);
+                        resolve();
+                    }
+                };
+
+                if (inferenceWorkerRef.current) {
+                    inferenceWorkerRef.current.addEventListener('message', resetListener);
+                    inferenceWorkerRef.current.postMessage({ type: 'reset' });
+                }
+
+                // Set timeout to avoid hanging
+                setTimeout(() => {
+                    inferenceWorkerRef.current?.removeEventListener('message', resetListener);
+                    console.warn('[App] Reset response timeout - continuing anyway');
+                    resolve();
+                }, 1000);
+            });
+
             // Add a callback for video completion
             videoProcessorRef.current.setOnVideoComplete(() => {
                 console.log('[App] Video processing complete');
@@ -400,20 +430,11 @@ const App: React.FC = () => {
                 });
             });
 
-            // Reset data and frame collection
-            resetData();
-            frameCollectionRef.current = {
-                frames: [],
-                initialCollectionComplete: false,
-                framesSinceLastInference: 0
-            };
-
-            // Start the worker capture BEFORE loading the video
-            // This is the critical step that was missing
+            // Start the worker capture AFTER reset is complete
             console.log('[App] Starting inference worker capture for video processing');
             inferenceWorkerRef.current.postMessage({
                 type: 'startCapture'
-            });            
+            });
 
             // Load the video file
             await videoProcessorRef.current.loadVideoFile(file);
@@ -439,7 +460,6 @@ const App: React.FC = () => {
         // Reset the file input
         event.target.value = '';
     }, [resetData, startMonitoring]);
-
 
 
     // Start capture handler
@@ -768,8 +788,9 @@ const App: React.FC = () => {
                         snr={vitalSigns.bvpSNR}
                         quality={vitalSigns.bvpQuality}
                         type="bvp"
-                        isReady={isCapturing && bufferProgress >= 100}
+                        isReady={(isCapturing || vitalSigns.bvpSignal.length > 0) && bufferProgress >= 100}
                     />
+
                     <VitalSignsChart
                         title="Respiratory Signal"
                         data={vitalSigns.respSignal}
@@ -778,7 +799,7 @@ const App: React.FC = () => {
                         snr={vitalSigns.respSNR}
                         quality={vitalSigns.respQuality}
                         type="resp"
-                        isReady={isCapturing && bufferProgress >= 100}
+                        isReady={(isCapturing || vitalSigns.respSignal.length > 0) && bufferProgress >= 100}
                     />
                 </div>
             </main>

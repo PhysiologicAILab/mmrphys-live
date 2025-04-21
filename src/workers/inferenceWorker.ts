@@ -424,7 +424,7 @@ class InferenceWorker {
 
         // Force all flags to inactive state
         this.signalProcessor.isCapturing = false;
-        this.isInitialized = false;
+        // this.isInitialized = false;
 
         console.log('[InferenceWorker] After stopping signal processor:', this.signalProcessor.isCapturing);
 
@@ -477,13 +477,6 @@ const worker = new InferenceWorker();
 // Message handler
 self.onmessage = async (e: MessageEvent) => {
     try {
-        // Special handling for stopCapture - process this immediately with highest priority
-        if (e.data.type === 'stopCapture') {
-            console.log('[InferenceWorker] Emergency stop requested');
-            worker.stopCapture();
-            return;
-        }
-
         // Special handling for reset - always process regardless of state
         if (e.data.type === 'reset') {
             console.log('[InferenceWorker] Resetting worker state');
@@ -492,6 +485,13 @@ self.onmessage = async (e: MessageEvent) => {
             globalStopRequested = false;
             worker.reset();
             self.postMessage({ type: 'reset', status: 'success' });
+            return;
+        }
+
+        // Special handling for stopCapture - process this immediately with highest priority
+        if (e.data.type === 'stopCapture') {
+            console.log('[InferenceWorker] Emergency stop requested');
+            worker.stopCapture();
             return;
         }
 
