@@ -233,6 +233,6 @@ def main(file_path):
 
 
 if __name__ == "__main__":
-    file_path = "/Users/jiteshjoshi/Downloads/rPhys/mmrphys.github.io/python_scripts/vital-signs-2025-04-16T12-47-14-917Z.json"
+    file_path = "data/vital-signs-2025-04-16T12-47-14-917Z.json"
     main(file_path)
     
