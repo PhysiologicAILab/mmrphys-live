@@ -185,7 +185,14 @@ const App: React.FC = () => {
                 respLength: inferenceResult.resp?.filtered?.length || 0,
                 isCapturing: isCapturing,
                 bufferProgress: bufferProgress,
+                heartRate: inferenceResult.bvp.metrics.rate,
+                respRate: inferenceResult.resp.metrics.rate,
             });
+
+            // Force buffer progress to 100% once we start getting results
+            if (inferenceResult.bvp?.filtered?.length > 0) {
+                setBufferProgress(100);
+            }
 
             // Update vital signs with the received data
             updateVitalSigns({
@@ -205,7 +212,7 @@ const App: React.FC = () => {
                 respArtifactRatio: inferenceResult.resp.metrics.quality.artifactRatio || 0,
             });
 
-            // Update performance metrics - still track inference time internally
+            // Update performance metrics
             if (event.data.performanceMetrics) {
                 updatePerformance(event.data.performanceMetrics);
             }

@@ -439,19 +439,24 @@ class InferenceWorker {
     reset(): void {
         console.log('[InferenceWorker] Full worker reset initiated');
 
-        // Reset global flags first
+        // Reset global flags first - CRITICAL
         isShuttingDown = false;
         globalStopRequested = false;
 
         // Reset signal processor if it exists
         if (this.signalProcessor) {
             this.signalProcessor.reset();
+            // Ensure capture state is reset but initialized state is preserved
+            this.signalProcessor.isCapturing = false;
         }
 
         // Restore initialization flag - extremely important
         this.isInitialized = true;
 
         console.log('[InferenceWorker] Worker reset complete, ready for new capture');
+
+        // Immediately confirm reset to main thread
+        self.postMessage({ type: 'reset', status: 'success' });
     }
 
     async dispose(): Promise<void> {

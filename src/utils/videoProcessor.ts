@@ -36,6 +36,10 @@ export class VideoProcessor {
     private readonly FACE_HISTORY_SIZE = 5;
     private isVideoFileSource: boolean = false;
     private onVideoComplete: (() => void) | null = null;
+    private faceDetectionActive: boolean = false;
+    private lastFaceDetectionTime: number = 0;
+    private readonly FACE_DETECTION_INTERVAL_MS: number = 100; // Detect faces every 100ms
+
 
     constructor() {
         // Initialize video element
@@ -104,6 +108,7 @@ export class VideoProcessor {
         this.croppedCtx.imageSmoothingQuality = 'high';
     }
 
+    // Modified for video file loading
     async loadVideoFile(file: File): Promise<void> {
         // Stop any existing capture
         await this.stopCapture();
@@ -118,10 +123,12 @@ export class VideoProcessor {
         this.frameBuffer = [];
         this.newFramesBuffer = [];
         this.frameCount = 0;
+        this.faceBoxHistory = [];
 
         // Set the video element source
         this.videoElement.src = videoURL;
         this.videoElement.muted = true;
+        this.videoElement.playbackRate = 0.8;
 
         // Wait for video metadata to load
         return new Promise<void>((resolve, reject) => {
@@ -133,21 +140,44 @@ export class VideoProcessor {
                 clearTimeout(timeout);
 
                 // Initialize face detector if needed
-                if (!this.faceDetector.isInitialized) {
-                    this.faceDetector.initialize().then(() => {
-                        // Load config and start processing
-                        this.loadConfigSettings().then(() => {
-                            this.startFrameProcessing();
-                            resolve();
-                        }).catch(reject);
-                    }).catch(reject);
-                } else {
-                    // Just load config and start processing
-                    this.loadConfigSettings().then(() => {
-                        this.startFrameProcessing();
-                        resolve();
-                    }).catch(reject);
-                }
+                const initializeAndStartProcessing = async () => {
+                    if (!this.faceDetector.isInitialized) {
+                        await this.faceDetector.initialize();
+                    } else {
+                        this.faceDetector.stopDetection();
+                        this.faceDetector.noDetectionCount = 0;
+                    }
+
+                    await this.loadConfigSettings();
+
+                    // Run initial face detection without blocking
+                    try {
+                        await this.videoElement.play();
+                        await new Promise(r => setTimeout(r, 100));
+
+                        // Start face detection but don't await it
+                        this.faceDetector.detectFace(this.videoElement).then(initialFace => {
+                            if (initialFace) {
+                                this.currentFaceBox = initialFace;
+                            }
+                            // Reset to beginning after face detection
+                            this.videoElement.currentTime = 0;
+                        });
+
+                    } catch (error) {
+                        console.warn('Initial video face detection failed:', error);
+                        this.videoElement.currentTime = 0;
+                    }
+
+                    // Start parallel face detection
+                    this.startParallelFaceDetection();
+
+                    // Start frame processing
+                    this.startFrameProcessing();
+                    resolve();
+                };
+
+                initializeAndStartProcessing().catch(reject);
             };
 
             this.videoElement.onerror = () => {
@@ -160,31 +190,21 @@ export class VideoProcessor {
 
     async startCapture(): Promise<void> {
         try {
-            // Clear frame buffer
-            this.frameBuffer = [];
-            this.currentFaceBox = null;
-            // Reset face detection counter
-            this.faceDetectionFrameCounter = 0;
-
-            // Reset signal buffers (if applicable)
-            if (this.onFrameProcessed) {
-                this.onFrameProcessed = null;
-            }
+            // Existing setup code...
 
             this.isVideoFileSource = false;
-            // Load frame dimensions from config
             await this.loadConfigSettings();
 
-            // Reinitialize face detector
+            // Initialize face detector
             if (!this.faceDetector.isInitialized) {
                 console.log('Reinitializing face detector...');
                 await this.faceDetector.initialize();
             } else {
-                // Reset face detector state if already initialized
                 this.faceDetector.stopDetection();
-                this.faceDetector.noDetectionCount = 0; // Reset no-detection counter
+                this.faceDetector.noDetectionCount = 0;
             }
 
+            // Get media stream as before
             const constraints = {
                 video: {
                     facingMode: 'user',
@@ -205,17 +225,26 @@ export class VideoProcessor {
                 this.videoElement.onplaying = async () => {
                     clearTimeout(timeout);
 
-                    // Perform immediate face detection on first frame
+                    // Perform immediate face detection on first frame, but don't block
                     try {
                         // Wait a tiny bit for the video to be fully ready
                         await new Promise(r => setTimeout(r, 100));
-                        const initialFace = await this.faceDetector.detectFace(this.videoElement);
-                        this.currentFaceBox = initialFace;
-                        console.log('Initial face detection completed');
+                        this.faceDetector.detectFace(this.videoElement).then(initialFace => {
+                            if (initialFace) {
+                                this.currentFaceBox = initialFace;
+                                console.log('Initial face detection completed');
+                            }
+                        }).catch(error => {
+                            console.warn('Initial face detection failed:', error);
+                        });
                     } catch (error) {
-                        console.warn('Initial face detection failed:', error);
+                        console.warn('Setting up initial face detection failed:', error);
                     }
 
+                    // Start separate face detection loop
+                    this.startParallelFaceDetection();
+
+                    // Start frame processing immediately without waiting for face detection
                     this.startFrameProcessing();
                     resolve();
                 };
@@ -226,6 +255,57 @@ export class VideoProcessor {
             throw new Error(`Failed to start capture: ${error}`);
         }
     }
+
+    // New method for parallel face detection
+    private startParallelFaceDetection(): void {
+        if (this.faceDetectionActive) return;
+
+        this.faceDetectionActive = true;
+        console.log('[VideoProcessor] Starting parallel face detection');
+
+        const detectFaces = async () => {
+            if (!this.faceDetectionActive || this._isShuttingDown) {
+                console.log('[VideoProcessor] Face detection loop stopped');
+                return;
+            }
+
+            const now = performance.now();
+            // Only detect faces at specific intervals to avoid overloading
+            if (now - this.lastFaceDetectionTime >= this.FACE_DETECTION_INTERVAL_MS) {
+                try {
+                    const detectedFace = await this.faceDetector.detectFace(this.videoElement);
+
+                    if (detectedFace) {
+                        // Only update if face moved significantly or we have few history entries
+                        if (this.shouldUpdateFaceBox(detectedFace) || this.faceBoxHistory.length < 3) {
+                            // Add to history
+                            this.faceBoxHistory.push(detectedFace);
+                            if (this.faceBoxHistory.length > this.FACE_HISTORY_SIZE) {
+                                this.faceBoxHistory.shift();
+                            }
+
+                            // Update current face box with median values from history
+                            if (this.faceBoxHistory.length > 0) {
+                                this.currentFaceBox = this.getMedianFaceBox();
+                            }
+                        }
+                    }
+
+                    this.lastFaceDetectionTime = now;
+                } catch (error) {
+                    console.error('Face detection error:', error);
+                }
+            }
+
+            // Schedule next detection
+            if (!this._isShuttingDown) {
+                requestAnimationFrame(detectFaces);
+            }
+        };
+
+        // Start the detection loop
+        detectFaces();
+    }    
 
     private async loadConfigSettings(): Promise<void> {
         try {
@@ -285,6 +365,13 @@ export class VideoProcessor {
 
         if (this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES) {
             try {
+                // For video files, consider pausing during detection to ensure it completes
+                const wasPlaying = !this.videoElement.paused;
+
+                if (this.isVideoFileSource && wasPlaying) {
+                    this.videoElement.pause();
+                }
+
                 const detectedFace = await this.faceDetector.detectFace(this.videoElement);
 
                 if (detectedFace) {
@@ -297,10 +384,29 @@ export class VideoProcessor {
                         }
 
                         // Update current face box with median values from history
-                        if (this.faceBoxHistory.length > 0){
+                        if (this.faceBoxHistory.length > 0) {
                             this.currentFaceBox = this.getMedianFaceBox();
                         }
+
+                        // Log face detection for debugging
+                        if (this.frameCount % 30 === 0) {
+                            console.log(`[VideoProcessor] Face detected at (${detectedFace.x.toFixed(0)},${detectedFace.y.toFixed(0)}) size: ${detectedFace.width.toFixed(0)}x${detectedFace.height.toFixed(0)}`);
+                        }
                     }
+                } else if (this.isVideoFileSource) {
+                    // For video files, use center crop if no face detected
+                    const size = Math.min(this.videoElement.videoWidth, this.videoElement.videoHeight);
+                    this.currentFaceBox = {
+                        x: (this.videoElement.videoWidth - size) / 2,
+                        y: (this.videoElement.videoHeight - size) / 2,
+                        width: size,
+                        height: size
+                    };
+                }
+
+                // Resume video if we paused it
+                if (this.isVideoFileSource && wasPlaying) {
+                    await this.videoElement.play();
                 }
 
                 // Reset counter after detection
@@ -361,36 +467,54 @@ export class VideoProcessor {
         });
     }
 
+    // Modified frame processing to completely remove face detection from main loop
     private startFrameProcessing(): void {
-        // Process frames at target FPS
-        this._isShuttingDown = false; // Reset flag when starting
+        this._isShuttingDown = false;
 
         if (this.isVideoFileSource) {
-            // Start playing the video
             this.videoElement.play().catch(error => {
                 console.error('Failed to play video:', error);
             });
         }
 
-        const processFrame = async () => {
-            // First check if we're shutting down
+        let frameBacklog = 0;
+
+        const processFrame = async (timestamp: number) => {
             if (this._isShuttingDown) {
-                console.log('[VideoProcessor] Aborting frame processing loop - shutdown in progress');
-                return; // Don't request a new frame
-            }
-            const now = performance.now();
-
-            // For video files, we don't throttle by frame rate
-            if (this.isVideoFileSource || (now - this.lastFrameTime >= this.frameInterval)) {
-                // Update face detection if needed
-                await this.updateFaceDetection();
-
-                // Process frame
-                this.processVideoFrame(now);
-                this.lastFrameTime = now;
+                console.log('[VideoProcessor] Aborting frame processing loop');
+                return;
             }
 
-            // Only request next frame if not shutting down and (for video files) if video is still playing
+            // Implement backpressure for video files
+            if (this.isVideoFileSource) {
+                if (frameBacklog > 10) {
+                    this.videoElement.playbackRate = Math.max(0.5, 0.8 - (frameBacklog / 60));
+                    if (frameBacklog > 20) {
+                        this.videoElement.pause();
+                        await new Promise(r => setTimeout(r, 50));
+                        this.videoElement.play().catch(e => console.error(e));
+                    }
+                } else if (frameBacklog < 3) {
+                    this.videoElement.playbackRate = Math.min(1.0, 0.8 + (0.2 * (1 - frameBacklog / 3)));
+                }
+            }
+
+            // Process frames at consistent intervals - NO face detection here
+            if (this.isVideoFileSource || (timestamp - this.lastFrameTime >= this.frameInterval)) {
+                // Process frame immediately - face detection happens in parallel
+                this.processVideoFrame(timestamp);
+                frameBacklog++;
+
+                const oldCallback = this.onFrameProcessed;
+                this.onFrameProcessed = (frame) => {
+                    frameBacklog = Math.max(0, frameBacklog - 1);
+                    if (oldCallback) oldCallback(frame);
+                };
+
+                this.lastFrameTime = timestamp;
+            }
+
+            // Continue processing frames
             if (!this._isShuttingDown && (!this.isVideoFileSource || !this.videoElement.ended)) {
                 this.processingFrameId = requestAnimationFrame(processFrame);
             } else if (this.isVideoFileSource && this.videoElement.ended) {
@@ -424,39 +548,57 @@ export class VideoProcessor {
                 this.frameTimestamps = this.frameTimestamps.slice(-this.FPS_WINDOW_SIZE);
             }
 
-            // Calculate and log FPS every 30 frames
+            // Calculate and log FPS every 30 frames with improved dynamic adjustment
             if (this.frameCount % 30 === 0) {
                 const currentFPS = this.calculateCurrentFPS();
                 console.log(`[VideoProcessor] Current effective FPS: ${currentFPS.toFixed(1)}`);
 
-                // If FPS is consistently too low (below 90% of target), adjust frame interval
-                if (currentFPS > 0 && currentFPS < this.targetFPS * 0.9 && this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
-                    const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
-                    console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
-                    this.frameInterval = newInterval;
+                // Dynamic interval adjustment - both increase and decrease as needed
+                if (this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
+                    if (currentFPS < this.targetFPS * 0.9) {
+                        // FPS too low - decrease interval (increase framerate)
+                        const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
+                        console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
+                        this.frameInterval = newInterval;
+                    } else if (currentFPS > this.targetFPS * 1.1) {
+                        // FPS too high - increase interval (decrease framerate) to save resources
+                        const newInterval = Math.min(this.frameInterval * 1.05, 1000 / (this.targetFPS * 0.9));
+                        console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to stabilize FPS`);
+                        this.frameInterval = newInterval;
+                    }
                 }
             }
 
             this.frameCount++;
 
+            // Performance optimization: Skip unnecessary drawing for offscreen frames
+            const isDisplayActive = !!this.displayCtx && !!this.displayCanvas;
+
             const cropRegion = this.getCropRegion();
 
-            // Draw cropped region to 256x256 canvas for display
-            this.croppedCtx.drawImage(
-                this.videoElement,
-                cropRegion.x,
-                cropRegion.y,
-                cropRegion.width,
-                cropRegion.height,
-                0,
-                0,
-                256,
-                256
-            );
+            // Only draw to cropped canvas if we need it for display or for face detection
+            if (isDisplayActive || this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES - 1) {
+                // Draw cropped region to 256x256 canvas for display
+                this.croppedCtx.drawImage(
+                    this.videoElement,
+                    cropRegion.x,
+                    cropRegion.y,
+                    cropRegion.width,
+                    cropRegion.height,
+                    0,
+                    0,
+                    256,
+                    256
+                );
+            }
 
             // Draw to processing canvas with dimensions from config
             this.processingCtx.drawImage(
-                this.croppedCanvas,
+                isDisplayActive ? this.croppedCanvas : this.videoElement,
+                isDisplayActive ? 0 : cropRegion.x,
+                isDisplayActive ? 0 : cropRegion.y,
+                isDisplayActive ? 256 : cropRegion.width,
+                isDisplayActive ? 256 : cropRegion.height,
                 0,
                 0,
                 this.frameWidth,
@@ -480,8 +622,8 @@ export class VideoProcessor {
                 this.frameBuffer.shift();
             }
 
-            // Update display if needed
-            if (this.displayCtx && this.displayCanvas) {
+            // Update display if needed - only if display is active
+            if (isDisplayActive && this.displayCtx) {
                 this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
             }
 
@@ -526,11 +668,13 @@ export class VideoProcessor {
 
     async stopCapture(): Promise<void> {
         console.log('[VideoProcessor] Stopping capture - clearing all resources');
-        
-        // Add a flag to immediately prevent new processing
+
+        // Stop face detection first
+        this.faceDetectionActive = false;
+
+        // Rest of the existing stopCapture code...
         this._isShuttingDown = true;
 
-        // Cancel the animation frame loop
         if (this.processingFrameId !== null) {
             cancelAnimationFrame(this.processingFrameId);
             this.processingFrameId = null;

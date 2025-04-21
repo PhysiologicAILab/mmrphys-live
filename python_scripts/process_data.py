@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy import signal
 from datetime import datetime
 import os
+import argparse
 
 
 def load_data(file_path):
@@ -23,7 +24,7 @@ def apply_butterworth_bandpass(signal_data, fs, lowcut, highcut, order=4):
 
 
 def find_dominant_frequency(fft_result, fs, min_freq, max_freq):
-    """Find the dominant frequency in the specified range."""
+    """Find the dominant frequency in the specified range with harmonic detection."""
     # Calculate frequency resolution
     n = len(fft_result)
     freq_resolution = fs / n
@@ -35,13 +36,54 @@ def find_dominant_frequency(fft_result, fs, min_freq, max_freq):
     # Extract power spectrum in the frequency range
     power_spectrum = np.abs(fft_result[min_idx:max_idx])**2
 
-    # Find the peak
+    # If no valid data, return 0
     if len(power_spectrum) == 0:
         return 0
-    peak_idx = np.argmax(power_spectrum) + min_idx
 
-    # Return the frequency in Hz
-    return peak_idx * freq_resolution
+    # Create an array of all frequencies in our range
+    frequencies = np.arange(min_idx, max_idx) * freq_resolution
+
+    # Find all significant peaks in the power spectrum
+    # A peak must be at least 20% of the maximum power in the range
+    threshold = 0.2 * np.max(power_spectrum)
+    peaks = []
+
+    for i in range(1, len(power_spectrum) - 1):
+        if (power_spectrum[i] > power_spectrum[i-1] and
+            power_spectrum[i] > power_spectrum[i+1] and
+                power_spectrum[i] > threshold):
+            peaks.append({
+                'idx': i + min_idx,
+                'freq': frequencies[i],
+                'power': power_spectrum[i]
+            })
+
+    # Sort peaks by power
+    peaks.sort(key=lambda x: x['power'], reverse=True)
+
+    if not peaks:
+        # No peaks found, use the maximum power approach as fallback
+        peak_idx = np.argmax(power_spectrum) + min_idx
+        return peak_idx * freq_resolution
+
+    dominant_peak = peaks[0]
+
+    # Check if the most powerful peak might be a harmonic
+    if len(peaks) > 1:
+        # Look at other strong peaks
+        for peak in peaks[1:]:
+            # Check if this peak could be the fundamental frequency of the dominant peak
+            ratio = dominant_peak['freq'] / peak['freq']
+
+            # If the dominant frequency is approximately double of another peak
+            if 1.9 < ratio < 2.1 and peak['power'] > 0.3 * dominant_peak['power']:
+                print(
+                    f"Detected harmonic: {dominant_peak['freq']:.2f}Hz is likely 2x of {peak['freq']:.2f}Hz")
+                # Return the lower frequency (fundamental)
+                return peak['freq']
+
+    # If no harmonic relationship found, return the dominant frequency
+    return dominant_peak['freq']
 
 
 def calculate_heart_rate(signal_data, fs):
@@ -79,7 +121,7 @@ def remove_dc(signal_data):
     return signal_data - np.mean(signal_data)
 
 
-def plot_signals(data, bvp_filtered, resp_filtered, hr, rr):
+def plot_signals(data, bvp_filtered, resp_filtered, hr, rr, file_path="data/sample_data.json"):
     """Plot raw and filtered signals with computed heart and respiratory rates."""
     sampling_rate = data['metadata']['samplingRate']
     start_time = datetime.fromisoformat(
@@ -137,8 +179,8 @@ def plot_signals(data, bvp_filtered, resp_filtered, hr, rr):
     print(f"Computed Respiratory Rate: {rr:.1f} breaths/min")
 
 
-def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_freq=None):
-    """Plot the frequency spectrum of a signal."""
+def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_freq=None, file_path="data/sample_data.json"):
+    """Plot the frequency spectrum of a signal with x-axis in BPM or breaths/min."""
     # Apply window to reduce spectral leakage
     windowed = signal.windows.hamming(len(signal_data)) * signal_data
 
@@ -149,29 +191,42 @@ def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_fre
     n = len(fft_result)
     freq = np.fft.fftfreq(n, 1/fs)
 
+    # Convert frequency to rate (BPM or breaths/min)
+    rate = freq * 60
+
     # Plot only the positive frequency components up to max_freq
     positive_mask = freq > 0
     if max_freq:
         positive_mask = (freq > 0) & (freq <= max_freq)
 
     plt.figure(figsize=(10, 6))
-    plt.plot(freq[positive_mask], np.abs(fft_result)[positive_mask])
-    plt.title(f'Frequency Spectrum - {title}')
-    plt.xlabel('Frequency (Hz)')
+    plt.plot(rate[positive_mask], np.abs(fft_result)[positive_mask])
+
+    # Set appropriate title and labels based on signal type
+    if title == 'BVP':
+        plt.title(f'Heart Rate Spectrum - {title}')
+        plt.xlabel('Heart Rate (BPM)')
+    elif title == 'Respiratory':
+        plt.title(f'Respiratory Rate Spectrum - {title}')
+        plt.xlabel('Respiratory Rate (breaths/min)')
+    else:
+        plt.title(f'Frequency Spectrum - {title}')
+        plt.xlabel('Rate (per minute)')
+
     plt.ylabel(y_label)
     plt.grid(True)
 
-    # Mark the min and max frequency search ranges
+    # Mark the min and max frequency search ranges (converted to rate)
     if title == 'BVP':
-        plt.axvline(x=0.6, color='g', linestyle='--',
-                    label='Min HR Freq (0.6 Hz)')
-        plt.axvline(x=3.3, color='r', linestyle='--',
-                    label='Max HR Freq (3.3 Hz)')
+        plt.axvline(x=0.6 * 60, color='g', linestyle='--',
+                    label='Min HR (36 BPM)')
+        plt.axvline(x=3.3 * 60, color='r', linestyle='--',
+                    label='Max HR (198 BPM)')
     elif title == 'Respiratory':
-        plt.axvline(x=0.1, color='g', linestyle='--',
-                    label='Min RR Freq (0.1 Hz)')
-        plt.axvline(x=0.54, color='r', linestyle='--',
-                    label='Max RR Freq (0.54 Hz)')
+        plt.axvline(x=0.1 * 60, color='g', linestyle='--',
+                    label='Min RR (6 breaths/min)')
+        plt.axvline(x=0.54 * 60, color='r', linestyle='--',
+                    label='Max RR (32 breaths/min)')
 
     plt.legend()
 
@@ -182,14 +237,15 @@ def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_fre
     plt.savefig(output_file)
 
 
-def main(file_path):
+def main(file_path, sampling_rate=15):
     # Load the JSON data
     data = load_data(file_path)
 
     # Extract signals and metadata
     bvp_raw = np.array(data['signals']['bvp']['raw'])
     resp_raw = np.array(data['signals']['resp']['raw'])
-    sampling_rate = 15 # data['metadata']['samplingRate']
+    # Use provided sampling rate instead of hardcoded value
+    # sampling_rate = 15 # data['metadata']['samplingRate']
 
     # Remove DC component
     bvp_dc_removed = remove_dc(bvp_raw)
@@ -210,12 +266,13 @@ def main(file_path):
 
     # Plot frequency spectrums
     plot_frequency_spectrum(bvp_filtered, sampling_rate,
-                            'BVP', 'Magnitude', max_freq=5)
+                            'BVP', 'Magnitude', max_freq=5, file_path=file_path)
     plot_frequency_spectrum(resp_filtered, sampling_rate,
-                            'Respiratory', 'Magnitude', max_freq=1)
+                            'Respiratory', 'Magnitude', max_freq=1, file_path=file_path)
 
     # Plot signals and results
-    plot_signals(data, bvp_filtered, resp_filtered, hr, rr)
+    plot_signals(data, bvp_filtered, resp_filtered,
+                 hr, rr, file_path=file_path)
 
     # Compare with values in the JSON file
     # Calculate median heart rate and respiratory rate from the JSON data
@@ -233,6 +290,16 @@ def main(file_path):
 
 
 if __name__ == "__main__":
-    file_path = "data/vital-signs-2025-04-16T12-47-14-917Z.json"
-    main(file_path)
-    
+    # Set up argument parser
+    parser = argparse.ArgumentParser(
+        description='Process vital signs data from a JSON file')
+    parser.add_argument('file_path', type=str,
+                        help='Path to the JSON file containing vital signs data')
+    parser.add_argument('--sampling_rate', type=int, default=30,
+                        help='Sampling rate in Hz (default: 30)')
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Run main function with the provided file path
+    main(args.file_path, args.sampling_rate)
