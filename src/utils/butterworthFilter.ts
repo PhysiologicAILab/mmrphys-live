@@ -4,6 +4,9 @@ export class ButterworthFilter {
     private a: number[]; // Denominator coefficients
     private b: number[]; // Numerator coefficients
     private z: number[]; // Filter state
+    private forwardOutputBuffer: Float32Array | null = null;
+    private backwardOutputBuffer: Float32Array | null = null;
+    private _coefficientsNormalized: boolean = false;
 
     constructor(filterCoefficients: { a: number[]; b: number[] }) {
         this.a = [...filterCoefficients.a];
@@ -51,52 +54,92 @@ export class ButterworthFilter {
         return { a: [1], b: [1] }; // Identity filter (passthrough)
     }
 
-    // Simple 1D filter (lfilter equivalent)
-    private lfilter(signal: number[]): number[] {
-        const result = new Array(signal.length).fill(0);
-        const x = [...signal];
-        const y = [...result];
+    // // Simple 1D filter (lfilter equivalent)
+    // private optimizedLfilter(signal: number[] | Float32Array, outputBuffer: Float32Array): void {
+    //     // Check if a[0] is not 1, normalize coefficients if needed (once per filter instance)
+    //     if (this.a[0] !== 1 && !this._coefficientsNormalized) {
+    //         const a0 = this.a[0];
+    //         for (let i = 0; i < this.b.length; i++) this.b[i] /= a0;
+    //         for (let i = 0; i < this.a.length; i++) this.a[i] /= a0;
+    //         this._coefficientsNormalized = true;
+    //     }
 
+    //     // Clear output buffer first
+    //     outputBuffer.fill(0);
 
-        // If a[0] is not 1, normalize both a and b coefficients
-        if (this.a[0] !== 1) {
-            const a0 = this.a[0];
-            for (let i = 0; i < this.b.length; i++) this.b[i] /= a0;
-            for (let i = 0; i < this.a.length; i++) this.a[i] /= a0;
-        }
+    //     // Apply filter directly to the output buffer
+    //     for (let i = 0; i < signal.length; i++) {
+    //         // Apply the numerator coefficients (b terms)
+    //         for (let j = 0; j < this.b.length; j++) {
+    //             if (i - j >= 0) {
+    //                 outputBuffer[i] += this.b[j] * signal[i - j];
+    //             }
+    //         }
 
-        for (let i = 0; i < x.length; i++) {
-            // Apply the numerator coefficients (b terms)
-            for (let j = 0; j < this.b.length; j++) {
-                if (i - j >= 0) {
-                    y[i] += this.b[j] * x[i - j];
-                }
-            }
-
-            // Apply the denominator coefficients (a terms)
-            for (let j = 1; j < this.a.length; j++) {
-                if (i - j >= 0) {
-                    y[i] -= this.a[j] * y[i - j];
-                }
-            }
-        }
-
-        return y;
-    }
+    //         // Apply the denominator coefficients (a terms)
+    //         for (let j = 1; j < this.a.length; j++) {
+    //             if (i - j >= 0) {
+    //                 outputBuffer[i] -= this.a[j] * outputBuffer[i - j];
+    //             }
+    //         }
+    //     }
+    // }
 
     // Apply forward-backward zero-phase filter (filtfilt equivalent)
     public applyButterworthBandpass(signal: number[]): number[] {
         if (signal.length === 0) return [];
 
-        // Forward filter
-        const forwardFiltered = this.lfilter(signal);
+        // Create output array
+        const output = new Array(signal.length);
 
-        // Reverse and filter again
-        const reversed = [...forwardFiltered].reverse();
-        const backwardFiltered = this.lfilter(reversed);
+        // Apply single-pass IIR filter with proper state management
+        // This implementation uses classic direct form II structure
 
-        // Reverse again to get zero-phase result
-        return backwardFiltered.reverse();
+        // For debugging - check if coefficients look reasonable
+        if (this.a.length !== this.b.length) {
+            console.warn(`Filter coefficient arrays have different lengths: a=${this.a.length}, b=${this.b.length}`);
+        }
+
+        // Copy the signal to avoid modifying the original
+        const inputSignal = [...signal];
+
+        // Add debug logging 
+        console.log(`Filtering signal: length=${signal.length}, first few values=[${signal.slice(0, 5).join(', ')}]`);
+        console.log(`Filter coefficients: a=[${this.a.slice(0, 3).join(', ')}...], b=[${this.b.slice(0, 3).join(', ')}...]`);
+
+        try {
+            // Apply the filter directly
+            for (let i = 0; i < inputSignal.length; i++) {
+                // Initialize output sample with input * b[0]
+                output[i] = this.b[0] * inputSignal[i];
+
+                // Add contributions from previous inputs (if any)
+                for (let j = 1; j < this.b.length; j++) {
+                    if (i - j >= 0) {
+                        output[i] += this.b[j] * inputSignal[i - j];
+                    }
+                }
+
+                // Subtract contributions from previous outputs (feedback)
+                for (let j = 1; j < this.a.length; j++) {
+                    if (i - j >= 0) {
+                        output[i] -= this.a[j] * output[i - j];
+                    }
+                }
+            }
+
+            // Log some statistics about the output
+            const nonZeroCount = output.filter(v => v !== 0).length;
+            const outputMean = output.reduce((sum, val) => sum + val, 0) / output.length;
+            const firstFewOutput = output.slice(0, 5).join(', ');
+            console.log(`Filter output: nonZeroValues=${nonZeroCount}/${output.length}, mean=${outputMean.toFixed(6)}, first few=[${firstFewOutput}]`);
+
+            return output;
+        } catch (error) {
+            console.error("Error in Butterworth filter:", error);
+            // Return unfiltered signal as fallback
+            return inputSignal;
+        }
     }
 
     public applyMovingAverage(signal: number[], windowSize: number): number[] {

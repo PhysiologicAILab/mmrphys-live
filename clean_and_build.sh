@@ -19,6 +19,7 @@ fi
 # Install dependencies (if you haven't already)
 npm install face-api.js@latest
 npm install onnxruntime-web@1.17.0
+npm ci
 
 npm install
 
@@ -27,6 +28,8 @@ npm run setup
 
 # Verify the setup
 npm run verify-setup
+
+export GITHUB_PAGES=false
 
 # Build the website
 npm run dev

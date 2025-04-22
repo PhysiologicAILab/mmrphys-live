@@ -67,7 +67,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                         text: 'Time (seconds)'
                     },
                     min: 0,
-                    max: timeWindow, // Dynamic time window based on signal type
+                    max: timeWindow,
                     ticks: {
                         stepSize: Math.ceil(timeWindow / 5) // 5 ticks on the x-axis
                     }
@@ -100,11 +100,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                 },
                 title: {
                     display: true,
-                    text: [
-                        title,
-                        `${Number(rate).toFixed(1)} ${type === 'bvp' ? 'BPM' : 'Breaths/min'}`,
-                        `SNR: ${Number(snr).toFixed(1)} dB`
-                    ]
+                    text: title,
                 }
             }
         };
@@ -124,7 +120,10 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
             datasets: [
                 {
                     label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
-                    data: displayData,
+                    data: displayData.map((value, index) => ({
+                        x: index / fps, // Use exact time values rather than rounded strings
+                        y: value
+                    })),
                     borderColor: type === 'bvp' ? 'rgb(0, 105, 105)' : 'rgb(220, 53, 69)',
                     borderWidth: 1.5,
                     tension: 0.4, // Increase tension for smoother curves

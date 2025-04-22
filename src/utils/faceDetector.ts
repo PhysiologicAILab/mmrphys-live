@@ -36,7 +36,7 @@ export class FaceDetector {
 
     // Failure detection
     public noDetectionCount: number = 0;
-    private readonly MAX_NO_DETECTION_FRAMES: number = 100;
+    private readonly MAX_NO_DETECTION_FRAMES: number = 20;
     private onDetectionStopped: (() => void) | null = null;
 
     // Initial grace period for setup
@@ -59,14 +59,6 @@ export class FaceDetector {
      */
     setOnDetectionStoppedCallback(callback: () => void): void {
         this.onDetectionStopped = callback;
-    }
-
-    /**
-     * Set capturing state flag
-     */
-    setCapturingState(state: boolean): void {
-        this.isCapturing = state;
-        console.log(`Capturing state set to: ${state}`);
     }
 
     /**
@@ -235,6 +227,37 @@ export class FaceDetector {
      */
     isDetecting(): boolean {
         return this.isCapturing;
+    }
+
+    // Add a method to ensure proper reinitialization
+    async reinitialize(): Promise<void> {
+        // First dispose completely
+        await this.dispose();
+
+        // Then initialize from scratch
+        await this.initialize();
+
+        // Reset state for detection
+        this.noDetectionCount = 0;
+        this.initialGracePeriod = true;
+        this.frameCounter = 0;
+        this.faceBoxHistory = [];
+        this.currentFaceBox = null;
+
+        console.log('Face detector reinitialized from scratch');
+    }
+
+    // Enhance the setCapturingState method
+    setCapturingState(isCapturing: boolean): void {
+        this.isCapturing = isCapturing;
+
+        // If turning on capturing, make sure we're in a good state
+        if (isCapturing) {
+            this.noDetectionCount = 0;
+            this.initialGracePeriod = true;
+        }
+
+        console.log(`Face detector capturing state: ${isCapturing}`);
     }
 
     /**

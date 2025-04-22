@@ -31,6 +31,8 @@ class InferenceWorker {
     private frameHeight: number = 72;  // Will be updated from config
     private frameWidth: number = 72;   // Will be updated from config
     private sequenceLength: number = 181; // Will be updated from config
+    private _preprocessingTensor: ort.Tensor | null = null;
+    private _preprocessingBuffer: Float32Array | null = null;
 
     async initialize(): Promise<void> {
         if (this.isInitialized) return;
@@ -192,29 +194,51 @@ class InferenceWorker {
             throw new Error(`Frame dimensions mismatch: got ${firstFrame.width}x${firstFrame.height}, expected ${this.frameWidth}x${this.frameHeight}`);
         }
 
-        // Create tensor with shape [1, 3, sequence_length, height, width] - order from config
+        // Create tensor shape
         const shape = [1, 3, this.sequenceLength, this.frameHeight, this.frameWidth];
-        const data = new Float32Array(shape.reduce((a, b) => a * b));
+        const dataSize = shape.reduce((a, b) => a * b);
 
-        // Process each frame - careful to match the exact tensor layout expected by the model
+        // Reuse existing buffer or create new one if needed (dimensions changed or first run)
+        if (!this._preprocessingBuffer || this._preprocessingBuffer.length !== dataSize) {
+            console.log(`[InferenceWorker] Creating new preprocessing buffer of size ${dataSize}`);
+            this._preprocessingBuffer = new Float32Array(dataSize);
+        }
+
+        // Optimization: Use direct array indexing with precalculated constants
+        // Pre-calculate constants used in the inner loops to avoid repetitive multiplications
+        const frameStride = this.frameHeight * this.frameWidth;
+        const channelStride = this.sequenceLength * frameStride;
+
+        // Use direct buffer filling with optimized indexing
         for (let f = 0; f < frames.length; f++) {
             const frame = frames[f];
+            const frameData = frame.data;
 
-            // Fill tensor with normalized frame data in CHW format
-            for (let c = 0; c < 3; c++) {
-                for (let h = 0; h < this.frameHeight; h++) {
-                    for (let w = 0; w < this.frameWidth; w++) {
-                        const tensorIdx = c * (this.sequenceLength * this.frameHeight * this.frameWidth) +
-                            f * (this.frameHeight * this.frameWidth) +
-                            h * this.frameWidth + w;
-                        const pixelIdx = (h * this.frameWidth + w) * 4;
-                        data[tensorIdx] = frame.data[pixelIdx + c] / 255.0;
-                    }
+            // Process all pixels for all channels simultaneously with optimized loop ordering
+            // This loop structure is cache-friendly and reduces time complexity
+            for (let h = 0; h < this.frameHeight; h++) {
+                for (let w = 0; w < this.frameWidth; w++) {
+                    const pixelPos = (h * this.frameWidth + w) * 4;
+                    const pixelOffset = f * frameStride + h * this.frameWidth + w;
+
+                    // Process all 3 channels for this pixel position
+                    this._preprocessingBuffer[pixelOffset] = frameData[pixelPos] / 255.0;                        // Red
+                    this._preprocessingBuffer[channelStride + pixelOffset] = frameData[pixelPos + 1] / 255.0;    // Green
+                    this._preprocessingBuffer[2 * channelStride + pixelOffset] = frameData[pixelPos + 2] / 255.0; // Blue
                 }
             }
         }
 
-        return new ort.Tensor('float32', data, shape);
+        // Reuse tensor object if possible or create a new one
+        if (this._preprocessingTensor) {
+            // ORT API allows replacing the data of an existing tensor
+            (this._preprocessingTensor.data as Float32Array).set(this._preprocessingBuffer);
+            return this._preprocessingTensor;
+        } else {
+            // First time - create a new tensor
+            this._preprocessingTensor = new ort.Tensor('float32', this._preprocessingBuffer, shape);
+            return this._preprocessingTensor;
+        }
     }
 
     private async processFrames(frameBuffer: ImageData[]): Promise<SignalBuffers | null> {

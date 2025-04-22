@@ -72,8 +72,8 @@ export class SignalAnalyzer {
             const rate = peakFreq * 60;
             console.log(`${type}: Calculated rate before validation: ${rate.toFixed(1)}`);
 
-            // Assess signal quality
-            const quality = this.assessSignalQuality(processedSignal, raw);
+            // Assess signal quality, passing the signal type
+            const quality = this.assessSignalQuality(processedSignal, raw, type);
 
             // Validate rate
             const validatedRate = this.validateRate(rate, type, quality);
@@ -136,39 +136,80 @@ export class SignalAnalyzer {
     }
     
     /**
-     * Calculate Signal-to-Noise Ratio in dB
+     * Calculate frequency-based SNR using physiological frequency bands
+     * @param signal The filtered signal array
+     * @param raw The raw unfiltered signal array
+     * @param type The signal type ('heart' or 'resp')
+     * @returns SNR value in decibels
      */
-    private static calculateSNR(signal: number[], raw: number[]): number {
-        const signalPower = this.calculatePower(signal);
-
-        // If signal power is too low, return minimum threshold
-        if (signalPower < 1e-10) {
-            console.warn('Signal power is too low, setting SNR to a minimum threshold');
+    private static calculateSNR(signal: number[], raw: number[], type: 'heart' | 'resp'): number {
+        // Basic validation
+        if (!signal?.length || !raw?.length) {
+            console.warn(`Invalid inputs to SNR calculation for ${type} signal`);
             return 0.01;
         }
 
-        // Calculate noise as the difference between raw and filtered signals
-        const noise = raw.map((val, i) => val - signal[i]);
-        const noisePower = this.calculatePower(noise);
+        try {
+            // Get physiological frequency ranges based on passed signal type
+            const { minFreq, maxFreq } = this.FREQ_RANGES[type];
 
-        // Handle zero noise power
-        if (noisePower === 0 || noisePower < 1e-10) {
-            console.warn('Noise power is zero or too low, setting SNR to a minimum threshold');
-            return 0.01; // Minimum SNR threshold
+            // Apply windowing to reduce spectral leakage
+            const windowed = this.applyWindow(signal);
+
+            // Compute FFT
+            const fft = this.computeFFT(windowed);
+
+            // Calculate magnitude spectrum
+            const magnitudes = new Array(fft.real.length / 2);
+            for (let i = 0; i < magnitudes.length; i++) {
+                magnitudes[i] = Math.sqrt(fft.real[i] * fft.real[i] + fft.imag[i] * fft.imag[i]);
+            }
+
+            // Calculate frequency resolution (Hz per bin)
+            const fs = 30; // Sampling rate (Hz) - should match the actual sampling rate
+            const freqResolution = fs / fft.real.length;
+
+            // Calculate signal power in the physiological band
+            let signalPower = 0;
+            let totalPower = 0;
+
+            for (let i = 0; i < magnitudes.length; i++) {
+                const freq = i * freqResolution;
+                const power = magnitudes[i] * magnitudes[i];
+
+                // Add to total power
+                totalPower += power;
+
+                // If frequency is in physiological range, add to signal power
+                if (freq >= minFreq && freq <= maxFreq) {
+                    signalPower += power;
+                }
+            }
+
+            // Noise power is everything outside the physiological band
+            const noisePower = Math.max(totalPower - signalPower, 1e-10);
+
+            // Calculate SNR
+            const snrValue = 10 * Math.log10(signalPower / noisePower);
+
+            // Ensure SNR is within reasonable bounds
+            if (!isFinite(snrValue) || snrValue < 0) {
+                console.warn(`Invalid SNR value calculated for ${type}: ${snrValue}`);
+                return 0.01;
+            }
+
+            console.debug(`Frequency-based SNR for ${type}: ${snrValue.toFixed(2)} dB`);
+
+            return snrValue;
         }
-
-        const snr = 10 * Math.log10(signalPower / noisePower);
-
-        // Ensure the SNR is not negative or too small
-        return snr <= 0 ? 0.01 : snr;
-    }
-
-    private static calculatePower(signal: number[]): number {
-        return signal.reduce((sum, val) => sum + val * val, 0) / signal.length;
+        catch (error) {
+            console.error(`Error calculating frequency-based SNR for ${type}:`, error);
+            return 0.01;
+        }
     }
 
     // Update the assessSignalQuality method to properly calculate SNR
-    private static assessSignalQuality(signal: number[], raw: number[]): SignalMetrics['quality'] {
+    private static assessSignalQuality(signal: number[], raw: number[], type: 'heart' | 'resp'): SignalMetrics['quality'] {
         if (signal.length < 30) {
             return {
                 snr: 0,
@@ -181,7 +222,7 @@ export class SignalAnalyzer {
         try {
 
             // Calculate SNR using the improved method
-            const snr = this.calculateSNR(signal, raw);
+            const snr = this.calculateSNR(signal, raw, type);
 
             // Calculate signal strength using RMS
             const rms = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);

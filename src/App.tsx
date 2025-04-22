@@ -494,7 +494,19 @@ const App: React.FC = () => {
                 type: 'info'
             });
 
-            // First reset and wait for confirmation
+            // Reset the video processor completely first
+            if (videoProcessorRef.current) {
+                // Reset internal state and reinitialize face detector
+                await videoProcessorRef.current.reset();
+                // Ensure face detector is properly reinitialized
+                if (videoProcessorRef.current.faceDetector.isInitialized) {
+                    await videoProcessorRef.current.faceDetector.dispose();
+                }
+                await videoProcessorRef.current.faceDetector.initialize();
+                videoProcessorRef.current.faceDetector.setCapturingState(true);
+            }
+
+            // Reset worker and wait for confirmation
             await new Promise<void>((resolve, reject) => {
                 const resetListener = (e: MessageEvent) => {
                     if (e.data.type === 'reset' && e.data.status === 'success') {
@@ -527,6 +539,9 @@ const App: React.FC = () => {
             inferenceWorkerRef.current.postMessage({
                 type: 'startCapture'
             });
+
+            // Note: We removed the call to clearDisplayCanvas since it doesn't exist
+            // The canvas is already cleared by the reset() method above
 
             // Then start video capture
             await videoProcessorRef.current.startCapture();

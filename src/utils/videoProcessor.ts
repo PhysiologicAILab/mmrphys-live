@@ -26,7 +26,7 @@ export class VideoProcessor {
     private currentFaceBox: FaceBox | null = null;
     private configLoaded: boolean = false;
     private faceDetectionFrameCounter: number = 0;
-    private readonly FACE_DETECTION_INTERVAL_FRAMES: number = 3;
+    private readonly FACE_DETECTION_INTERVAL_FRAMES: number = 6;
     private frameTimestamps: number[] = [];
     private readonly FPS_WINDOW_SIZE = 30; // Calculate FPS over 30 frames
     private newFramesBuffer: ImageData[] = [];
@@ -37,9 +37,6 @@ export class VideoProcessor {
     private isVideoFileSource: boolean = false;
     private onVideoComplete: (() => void) | null = null;
     private faceDetectionActive: boolean = false;
-    private lastFaceDetectionTime: number = 0;
-    private readonly FACE_DETECTION_INTERVAL_MS: number = 100; // Detect faces every 100ms
-
 
     constructor() {
         // Initialize video element
@@ -195,14 +192,25 @@ export class VideoProcessor {
             this.isVideoFileSource = false;
             await this.loadConfigSettings();
 
-            // Initialize face detector
-            if (!this.faceDetector.isInitialized) {
-                console.log('Reinitializing face detector...');
-                await this.faceDetector.initialize();
-            } else {
+            // // Initialize face detector
+            // if (!this.faceDetector.isInitialized) {
+            //     console.log('Reinitializing face detector...');
+            //     await this.faceDetector.initialize();
+            // } else {
+            //     this.faceDetector.stopDetection();
+            //     this.faceDetector.noDetectionCount = 0;
+            // }
+
+            // Always reinitialize the face detector completely
+            if (this.faceDetector.isInitialized) {
                 this.faceDetector.stopDetection();
                 this.faceDetector.noDetectionCount = 0;
+                await this.faceDetector.dispose(); // Properly dispose the detector
             }
+            console.log('Reinitializing face detector...');                
+            await this.faceDetector.initialize();
+            this.faceDetector.setCapturingState(true); // Ensure capturing state is set
+
 
             // Get media stream as before
             const constraints = {
@@ -263,15 +271,20 @@ export class VideoProcessor {
         this.faceDetectionActive = true;
         console.log('[VideoProcessor] Starting parallel face detection');
 
+        // Add a counter for frame-based detection
+        let parallelDetectionFrameCounter = 0;
+
         const detectFaces = async () => {
             if (!this.faceDetectionActive || this._isShuttingDown) {
                 console.log('[VideoProcessor] Face detection loop stopped');
                 return;
             }
 
-            const now = performance.now();
-            // Only detect faces at specific intervals to avoid overloading
-            if (now - this.lastFaceDetectionTime >= this.FACE_DETECTION_INTERVAL_MS) {
+            // Increment frame counter for frame-based detection
+            parallelDetectionFrameCounter++;
+
+            // Only detect faces at specified frame intervals instead of time-based detection
+            if (parallelDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES) {
                 try {
                     const detectedFace = await this.faceDetector.detectFace(this.videoElement);
 
@@ -291,7 +304,8 @@ export class VideoProcessor {
                         }
                     }
 
-                    this.lastFaceDetectionTime = now;
+                    // Reset frame counter after detection
+                    parallelDetectionFrameCounter = 0;
                 } catch (error) {
                     console.error('Face detection error:', error);
                 }
@@ -471,57 +485,99 @@ export class VideoProcessor {
     private startFrameProcessing(): void {
         this._isShuttingDown = false;
 
+        // Initial video playback setup for file source
         if (this.isVideoFileSource) {
+            // Use a fixed playback rate for more consistent performance
+            this.videoElement.playbackRate = 0.8;
+
             this.videoElement.play().catch(error => {
-                console.error('Failed to play video:', error);
+                console.error('[VideoProcessor] Failed to play video:', error);
             });
         }
 
+        // Tracking variables
         let frameBacklog = 0;
+        let lastAdjustmentTime = 0;
+        const ADJUSTMENT_INTERVAL = 1000; // Only adjust playback every 1 second
 
         const processFrame = async (timestamp: number) => {
+            // Early exit if shutting down
             if (this._isShuttingDown) {
                 console.log('[VideoProcessor] Aborting frame processing loop');
                 return;
             }
 
-            // Implement backpressure for video files
+            // For video files, use simpler playback rate management
             if (this.isVideoFileSource) {
-                if (frameBacklog > 10) {
-                    this.videoElement.playbackRate = Math.max(0.5, 0.8 - (frameBacklog / 60));
-                    if (frameBacklog > 20) {
+                // Only check and adjust playback rate periodically to reduce overhead
+                if (timestamp - lastAdjustmentTime > ADJUSTMENT_INTERVAL) {
+                    lastAdjustmentTime = timestamp;
+
+                    // Simple adaptive playback control based on backlog
+                    if (frameBacklog > 30) {
+                        // Severe backlog - pause briefly to let processing catch up
                         this.videoElement.pause();
-                        await new Promise(r => setTimeout(r, 50));
+                        await new Promise(r => setTimeout(r, 100));
                         this.videoElement.play().catch(e => console.error(e));
+                        frameBacklog = Math.max(0, frameBacklog - 10); // Assume we caught up a bit
+                        console.log('[VideoProcessor] Severe backlog - paused playback briefly');
                     }
-                } else if (frameBacklog < 3) {
-                    this.videoElement.playbackRate = Math.min(1.0, 0.8 + (0.2 * (1 - frameBacklog / 3)));
+                    else if (frameBacklog > 20) {
+                        // Significant backlog - slow down playback
+                        this.videoElement.playbackRate = 0.5;
+                    }
+                    else if (frameBacklog > 10) {
+                        // Moderate backlog - slightly slow down
+                        this.videoElement.playbackRate = 0.7;
+                    }
+                    else {
+                        // Normal operation - use standard rate
+                        this.videoElement.playbackRate = 0.8;
+                    }
                 }
             }
 
-            // Process frames at consistent intervals - NO face detection here
-            if (this.isVideoFileSource || (timestamp - this.lastFrameTime >= this.frameInterval)) {
-                // Process frame immediately - face detection happens in parallel
+            // Determine if we should process this frame
+            const shouldProcessFrame = this.isVideoFileSource ||
+                (timestamp - this.lastFrameTime >= this.frameInterval);
+
+            if (shouldProcessFrame) {
+                // Process the frame
                 this.processVideoFrame(timestamp);
                 frameBacklog++;
 
-                const oldCallback = this.onFrameProcessed;
-                this.onFrameProcessed = (frame) => {
-                    frameBacklog = Math.max(0, frameBacklog - 1);
-                    if (oldCallback) oldCallback(frame);
-                };
-
+                // Track when frame was processed
                 this.lastFrameTime = timestamp;
+
+                // Set up one-time callback to decrement backlog when processed
+                const originalCallback = this.onFrameProcessed;
+                this.onFrameProcessed = (frame) => {
+                    // Decrement backlog when frame is fully processed
+                    frameBacklog = Math.max(0, frameBacklog - 1);
+
+                    // Call original callback if exists
+                    if (originalCallback) originalCallback(frame);
+
+                    // Restore original callback after this one fires
+                    this.onFrameProcessed = originalCallback;
+                };
             }
 
-            // Continue processing frames
-            if (!this._isShuttingDown && (!this.isVideoFileSource || !this.videoElement.ended)) {
+            // Continue processing if not complete
+            const isComplete = this.isVideoFileSource && this.videoElement.ended;
+
+            if (!this._isShuttingDown && !isComplete) {
                 this.processingFrameId = requestAnimationFrame(processFrame);
-            } else if (this.isVideoFileSource && this.videoElement.ended) {
+            } else if (isComplete) {
                 console.log('[VideoProcessor] Video playback complete');
+                // Notify listeners if video playback is complete
+                if (this.onVideoComplete) {
+                    this.onVideoComplete();
+                }
             }
         };
 
+        // Start the frame processing loop
         this.processingFrameId = requestAnimationFrame(processFrame);
     }
 
@@ -531,36 +587,33 @@ export class VideoProcessor {
 
     private processVideoFrame(timestamp: number): void {
         try {
-            // Immediately exit if we're shutting down
-            if (this._isShuttingDown) {
-                return;
-            }
-            if (!this.configLoaded) {
-                console.warn('Attempting to process frame before config is loaded');
+            // Immediately exit if we're shutting down or config not loaded
+            if (this._isShuttingDown || !this.configLoaded) {
+                if (!this.configLoaded) {
+                    console.warn('Attempting to process frame before config is loaded');
+                }
                 return;
             }
 
             // Record timestamp for FPS calculation
             this.frameTimestamps.push(timestamp);
-
-            // Keep the buffer size reasonable
             if (this.frameTimestamps.length > this.FPS_WINDOW_SIZE * 2) {
                 this.frameTimestamps = this.frameTimestamps.slice(-this.FPS_WINDOW_SIZE);
             }
 
-            // Calculate and log FPS every 30 frames with improved dynamic adjustment
-            if (this.frameCount % 30 === 0) {
+            // Calculate and log FPS every 60 frames with improved dynamic adjustment
+            if (this.frameCount % 60 === 0) {
                 const currentFPS = this.calculateCurrentFPS();
                 console.log(`[VideoProcessor] Current effective FPS: ${currentFPS.toFixed(1)}`);
 
                 // Dynamic interval adjustment - both increase and decrease as needed
                 if (this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
-                    if (currentFPS < this.targetFPS * 0.9) {
+                    if (currentFPS < this.targetFPS * 0.8) {
                         // FPS too low - decrease interval (increase framerate)
                         const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
                         console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
                         this.frameInterval = newInterval;
-                    } else if (currentFPS > this.targetFPS * 1.1) {
+                    } else if (currentFPS > this.targetFPS * 1.2) {
                         // FPS too high - increase interval (decrease framerate) to save resources
                         const newInterval = Math.min(this.frameInterval * 1.05, 1000 / (this.targetFPS * 0.9));
                         console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to stabilize FPS`);
@@ -571,14 +624,20 @@ export class VideoProcessor {
 
             this.frameCount++;
 
-            // Performance optimization: Skip unnecessary drawing for offscreen frames
+            // Determine if display or face detection needs the cropped canvas
             const isDisplayActive = !!this.displayCtx && !!this.displayCanvas;
+            const needsFaceCrop = this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES - 1;
+            const needsCroppedCanvas = isDisplayActive || needsFaceCrop;
 
+            // Get crop region once (reused across operations)
             const cropRegion = this.getCropRegion();
 
-            // Only draw to cropped canvas if we need it for display or for face detection
-            if (isDisplayActive || this.faceDetectionFrameCounter >= this.FACE_DETECTION_INTERVAL_FRAMES - 1) {
-                // Draw cropped region to 256x256 canvas for display
+            // Optimize canvas operations path based on requirements
+            let frameData;
+
+            if (needsCroppedCanvas) {
+                // Path 1: We need the cropped canvas for display or face detection
+                // Draw cropped region to intermediate canvas
                 this.croppedCtx.drawImage(
                     this.videoElement,
                     cropRegion.x,
@@ -590,41 +649,57 @@ export class VideoProcessor {
                     256,
                     256
                 );
+
+                // Draw to processing canvas from the cropped canvas
+                this.processingCtx.drawImage(
+                    this.croppedCanvas,
+                    0,
+                    0,
+                    256,
+                    256,
+                    0,
+                    0,
+                    this.frameWidth,
+                    this.frameHeight
+                );
+
+                // Update display if active - do this directly instead of at the end
+                if (isDisplayActive && this.displayCtx) {
+                    this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
+                }
+            } else {
+                // Path 2: We don't need the cropped canvas, draw directly from video to processing canvas
+                // This skips one unnecessary canvas operation for better performance
+                this.processingCtx.drawImage(
+                    this.videoElement,
+                    cropRegion.x,
+                    cropRegion.y,
+                    cropRegion.width,
+                    cropRegion.height,
+                    0,
+                    0,
+                    this.frameWidth,
+                    this.frameHeight
+                );
             }
 
-            // Draw to processing canvas with dimensions from config
-            this.processingCtx.drawImage(
-                isDisplayActive ? this.croppedCanvas : this.videoElement,
-                isDisplayActive ? 0 : cropRegion.x,
-                isDisplayActive ? 0 : cropRegion.y,
-                isDisplayActive ? 256 : cropRegion.width,
-                isDisplayActive ? 256 : cropRegion.height,
+            // Get processed frame data - only do this once
+            frameData = this.processingCtx.getImageData(
                 0,
                 0,
                 this.frameWidth,
                 this.frameHeight
             );
 
-            // Get processed frame data
-            const frameData = this.processingCtx.getImageData(
-                0,
-                0,
-                this.frameWidth,
-                this.frameHeight
-            );
-
-            // Update both frame buffers
+            // Update both frame buffers in one pass
             this.frameBuffer.push(frameData);
             this.newFramesBuffer.push(frameData);
 
             // Maintain maximum buffer size for frameBuffer
-            while (this.frameBuffer.length > this.MAX_BUFFER_SIZE) {
-                this.frameBuffer.shift();
-            }
-
-            // Update display if needed - only if display is active
-            if (isDisplayActive && this.displayCtx) {
-                this.displayCtx.drawImage(this.croppedCanvas, 0, 0);
+            // Use a more efficient approach than while loop for large buffers
+            if (this.frameBuffer.length > this.MAX_BUFFER_SIZE) {
+                const extraFrames = this.frameBuffer.length - this.MAX_BUFFER_SIZE;
+                this.frameBuffer = this.frameBuffer.slice(extraFrames);
             }
 
             // Notify frame processed
@@ -671,8 +746,6 @@ export class VideoProcessor {
 
         // Stop face detection first
         this.faceDetectionActive = false;
-
-        // Rest of the existing stopCapture code...
         this._isShuttingDown = true;
 
         if (this.processingFrameId !== null) {
@@ -683,6 +756,11 @@ export class VideoProcessor {
         // Explicitly tell the face detector to stop
         this.faceDetector.stopDetection();
         this.faceDetector.setCapturingState(false);
+
+        // Clear display canvas if it exists
+        if (this.displayCanvas && this.displayCtx) {
+            this.displayCtx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        }
 
         // Stop media stream
         if (this.mediaStream) {
@@ -713,6 +791,35 @@ export class VideoProcessor {
 
         console.log('[VideoProcessor] Capture stopped, all resources cleared');
     }
+
+    // Fix 3: Add a reset method to properly reinitialize processing state
+    async reset(): Promise<void> {
+        // Reset all internal state
+        this.frameBuffer = [];
+        this.newFramesBuffer = [];
+        this.lastFrameTime = 0;
+        this.frameCount = 0;
+        this.currentFaceBox = null;
+        this.frameTimestamps = [];
+        this.faceBoxHistory = [];
+        this._isShuttingDown = false;
+        this.faceDetectionActive = false;
+
+        // Clear canvases
+        if (this.displayCanvas && this.displayCtx) {
+            this.displayCtx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        }
+
+        if (this.croppedCtx) {
+            this.croppedCtx.clearRect(0, 0, this.croppedCanvas.width, this.croppedCanvas.height);
+        }
+
+        if (this.processingCtx) {
+            this.processingCtx.clearRect(0, 0, this.processingCanvas.width, this.processingCanvas.height);
+        }
+
+        console.log('[VideoProcessor] Reset complete');
+    }    
 
     /**
      * Get new frames captured since last call and clear new frames buffer
