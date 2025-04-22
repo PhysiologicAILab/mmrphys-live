@@ -12,6 +12,12 @@ const Footer: React.FC = () => {
                             
                         </p>
                     </div>
+                    <div>
+                        <h3 className="font-semibold mb-2">Source Code:</h3>
+                        <p className="text-sm text-gray-600">
+                            Check out the source code on <a href="https://github.com/physiologicailab/mmrphys-live" target="_blank" rel="noopener noreferrer">GitHub</a>.
+                        </p>
+                    </div>
                     {/* <div>
                         <h3 className="font-semibold mb-2">Copyright:</h3>
                         <p className="text-sm text-gray-600">
