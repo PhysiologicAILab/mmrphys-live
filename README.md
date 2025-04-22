@@ -115,7 +115,7 @@ mmrphys-live/
 │   ├── App.tsx               # Main application component
 │   └── main.tsx              # Entry point
 ├── scripts/                  # Build and setup scripts
-├── python_scripts/           # Python utilities for model conversion
+├── python_scripts/           # Python utilities to read and process the acquired data
 └── torch2onnx/               # PyTorch to ONNX conversion tools
 ```
 
