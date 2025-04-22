@@ -137,10 +137,38 @@ The application uses configuration files for the physiological sensing models in
 
 The application works best on devices with good camera quality and processing power.
 
-## License
+## Analyzing Exported Data
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+The application allows you to export vital signs data. After recording a session and exporting the data, you can use the included Python script to analyze and visualize the results:
 
-## Repository
+1. **Prerequisites:**
+   - Python 3.7+
+   - Required packages:
 
-[GitHub Repository](https://github.com/PhysiologicAILab/mmrphys-live)
+    ```bash
+    pip install numpy scipy matplotlib
+    ```
+
+2. **Using the processing script:**
+
+   ```bash
+   python python_scripts/process_data.py path/to/exported_data.json --sampling_rate 30
+   ```
+
+   This will:
+   - Load the exported vital signs data
+   - Filter the signals and compute heart rate and respiratory rate
+   - Generate and save visualization plots of the signals and their frequency spectra
+   - Compare computed values with the recorded values
+
+3. **Output:**
+   - Visual plots of BVP (blood volume pulse) and respiratory signals
+   - Frequency spectrum analysis
+   - Heart rate and respiratory rate calculations
+   - Plots are saved to the same directory as the input file
+
+## Citation
+
+(To be updated)
+
+Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", In Review, 2025
