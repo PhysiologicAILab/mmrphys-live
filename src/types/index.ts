@@ -40,8 +40,6 @@ export interface VitalSignsChartProps {
     rate: number;
     snr: number;
     quality?: 'excellent' | 'good' | 'moderate' | 'poor';
-    signalStrength?: number;
-    artifactRatio?: number;
 }
 
 export interface StatusMessageProps {
@@ -61,10 +59,6 @@ export interface VitalSigns {
     filteredRespSignal: number[];
     bvpQuality: 'excellent' | 'good' | 'moderate' | 'poor';
     respQuality: 'excellent' | 'good' | 'moderate' | 'poor';
-    bvpSignalStrength: number;
-    respSignalStrength: number;
-    bvpArtifactRatio: number;
-    respArtifactRatio: number;
 }
 
 export interface ControlsProps {
@@ -87,8 +81,6 @@ export interface SignalMetrics {
     quality: {
         snr: number;
         quality: 'excellent' | 'good' | 'moderate' | 'poor';
-        signalStrength?: number;
-        artifactRatio?: number;
     };
 }
 
@@ -130,11 +122,9 @@ export interface ExportData {
     signals: {
         bvp: {
             raw: number[];
-            filtered: number[];
         };
         resp: {
             raw: number[];
-            filtered: number[];
         }
     };
     rates: {

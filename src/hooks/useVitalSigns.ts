@@ -18,11 +18,7 @@ export const useVitalSigns = ({ isCapturing, onError }: UseVitalSignsProps) => {
         filteredBvpSignal: [],
         filteredRespSignal: [],
         bvpQuality: 'poor',
-        respQuality: 'poor',
-        bvpSignalStrength: 0,
-        respSignalStrength: 0,
-        bvpArtifactRatio: 0,
-        respArtifactRatio: 0
+        respQuality: 'poor'
     });
 
     const [performance, setPerformance] = useState({
@@ -59,11 +55,7 @@ export const useVitalSigns = ({ isCapturing, onError }: UseVitalSignsProps) => {
             filteredBvpSignal: [],
             filteredRespSignal: [],
             bvpQuality: 'poor',
-            respQuality: 'poor',
-            bvpSignalStrength: 0,
-            respSignalStrength: 0,
-            bvpArtifactRatio: 0,
-            respArtifactRatio: 0
+            respQuality: 'poor'
         });
         setPerformance({
             averageUpdateTime: 0,

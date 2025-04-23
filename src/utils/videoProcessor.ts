@@ -138,12 +138,17 @@ export class VideoProcessor {
 
                 // Initialize face detector if needed
                 const initializeAndStartProcessing = async () => {
-                    if (!this.faceDetector.isInitialized) {
-                        await this.faceDetector.initialize();
-                    } else {
+
+                    // Always reinitialize the face detector completely
+                    if (this.faceDetector.isInitialized) {
                         this.faceDetector.stopDetection();
                         this.faceDetector.noDetectionCount = 0;
+                        await this.faceDetector.dispose(); // Properly dispose the detector
                     }
+                    console.log('Reinitializing face detector...');
+                    await this.faceDetector.initialize();
+                    this.faceDetector.setCapturingState(true); // Ensure capturing state is set
+
 
                     await this.loadConfigSettings();
 
@@ -608,12 +613,12 @@ export class VideoProcessor {
 
                 // Dynamic interval adjustment - both increase and decrease as needed
                 if (this.frameTimestamps.length >= this.FPS_WINDOW_SIZE) {
-                    if (currentFPS < this.targetFPS * 0.8) {
+                    if (currentFPS < this.targetFPS * 0.9) {
                         // FPS too low - decrease interval (increase framerate)
                         const newInterval = Math.max(this.frameInterval * 0.95, 1000 / (this.targetFPS * 1.1));
                         console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to improve FPS`);
                         this.frameInterval = newInterval;
-                    } else if (currentFPS > this.targetFPS * 1.2) {
+                    } else if (currentFPS > this.targetFPS * 1.1) {
                         // FPS too high - increase interval (decrease framerate) to save resources
                         const newInterval = Math.min(this.frameInterval * 1.05, 1000 / (this.targetFPS * 0.9));
                         console.log(`[VideoProcessor] Adjusting frame interval from ${this.frameInterval.toFixed(1)}ms to ${newInterval.toFixed(1)}ms to stabilize FPS`);

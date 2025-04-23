@@ -206,10 +206,6 @@ const App: React.FC = () => {
                 respSNR: inferenceResult.resp.metrics.quality.snr,
                 bvpQuality: inferenceResult.bvp.metrics.quality.quality,
                 respQuality: inferenceResult.resp.metrics.quality.quality,
-                bvpSignalStrength: inferenceResult.bvp.metrics.quality.signalStrength || 0,
-                respSignalStrength: inferenceResult.resp.metrics.quality.signalStrength || 0,
-                bvpArtifactRatio: inferenceResult.bvp.metrics.quality.artifactRatio || 0,
-                respArtifactRatio: inferenceResult.resp.metrics.quality.artifactRatio || 0,
             });
 
             // Update performance metrics
@@ -797,7 +793,7 @@ const App: React.FC = () => {
 
                 <div className="text-center my-4">
                     <p className="text-sm text-gray-500 max-w-2xl mx-auto">
-                        <strong>Note:</strong> Please keep your head still and ensure well-lit environment for better results. The uploaded or captured video remains locally on your device.
+                        <strong>Note:</strong> For optimal results, please keep your head steady and ensure you're in a well-lit environment.
                     </p>
                 </div>
 

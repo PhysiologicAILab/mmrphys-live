@@ -2,8 +2,6 @@
 
 export interface SignalQuality {
     snr: number;           // Signal-to-noise ratio
-    signalStrength: number;// Overall signal strength
-    artifactRatio: number; // Ratio of artifacts detected
     quality: 'excellent' | 'good' | 'moderate' | 'poor';
 }
 
@@ -72,8 +70,8 @@ export class SignalAnalyzer {
             const rate = peakFreq * 60;
             console.log(`${type}: Calculated rate before validation: ${rate.toFixed(1)}`);
 
-            // Assess signal quality, passing the signal type
-            const quality = this.assessSignalQuality(processedSignal, raw, type);
+            // Assess signal quality, passing the signal type and sampling rate
+            const quality = this.assessSignalQuality(processedSignal, raw, type, samplingRate);
 
             // Validate rate
             const validatedRate = this.validateRate(rate, type, quality);
@@ -104,9 +102,7 @@ export class SignalAnalyzer {
             rate: defaultRates.default,
             quality: {
                 snr: 0,
-                quality: 'poor',
-                signalStrength: 0,
-                artifactRatio: 1
+                quality: 'poor'
             }
         };
     }
@@ -118,9 +114,20 @@ export class SignalAnalyzer {
     ): number {
         const range = this.RATE_RANGES[type];
 
-        // Less strict quality check - only use default for very poor signals
-        if (quality.quality === 'poor' && quality.artifactRatio > 0.4) {
-            console.log(`${type} rate rejected due to poor quality: artifactRatio=${quality.artifactRatio.toFixed(2)}`);
+        // Don't immediately reject respiration rates with poor quality
+        // Only use default for very poor signals with near-zero SNR
+        if (quality.quality === 'poor') {
+            // For respiration, be more lenient about using calculated values
+            if (type === 'resp' && quality.snr > -5.0 && rate >= range.min && rate <= range.max) {
+                console.log(`Using respiration rate ${rate.toFixed(1)} despite poor quality (${quality.snr.toFixed(2)} dB)`);
+                return rate;
+            }
+            if (type === 'heart' && quality.snr > -3.0 && rate >= range.min && rate <= range.max) {
+                console.log(`Using heart rate ${rate.toFixed(1)} despite poor quality (${quality.snr.toFixed(2)} dB)`);
+                return rate;
+            }
+
+            console.log(`${type} rate rejected due to poor quality: ${quality.snr.toFixed(2)} dB`);
             return range.default;
         }
 
@@ -142,9 +149,9 @@ export class SignalAnalyzer {
      * @param type The signal type ('heart' or 'resp')
      * @returns SNR value in decibels
      */
-    private static calculateSNR(signal: number[], raw: number[], type: 'heart' | 'resp'): number {
+    private static calculateSNR(raw: number[], type: 'heart' | 'resp', sampleRate: number = 30): number {
         // Basic validation
-        if (!signal?.length || !raw?.length) {
+        if (!raw?.length) {
             console.warn(`Invalid inputs to SNR calculation for ${type} signal`);
             return 0.01;
         }
@@ -154,7 +161,7 @@ export class SignalAnalyzer {
             const { minFreq, maxFreq } = this.FREQ_RANGES[type];
 
             // Apply windowing to reduce spectral leakage
-            const windowed = this.applyWindow(signal);
+            const windowed = this.applyWindow(raw);
 
             // Compute FFT
             const fft = this.computeFFT(windowed);
@@ -166,7 +173,8 @@ export class SignalAnalyzer {
             }
 
             // Calculate frequency resolution (Hz per bin)
-            const fs = 30; // Sampling rate (Hz) - should match the actual sampling rate
+            // Use the passed sample rate parameter instead of hardcoding
+            const fs = sampleRate;
             const freqResolution = fs / fft.real.length;
 
             // Calculate signal power in the physiological band
@@ -195,7 +203,7 @@ export class SignalAnalyzer {
             // Ensure SNR is within reasonable bounds
             if (!isFinite(snrValue) || snrValue < 0) {
                 console.warn(`Invalid SNR value calculated for ${type}: ${snrValue}`);
-                return 0.01;
+                return type === 'resp' ? 0.5 : 0.01; // Higher min value for resp
             }
 
             console.debug(`Frequency-based SNR for ${type}: ${snrValue.toFixed(2)} dB`);
@@ -204,58 +212,46 @@ export class SignalAnalyzer {
         }
         catch (error) {
             console.error(`Error calculating frequency-based SNR for ${type}:`, error);
-            return 0.01;
+            return type === 'resp' ? 0.5 : 0.01; // Higher fallback for resp
         }
     }
 
     // Update the assessSignalQuality method to properly calculate SNR
-    private static assessSignalQuality(signal: number[], raw: number[], type: 'heart' | 'resp'): SignalMetrics['quality'] {
+    private static assessSignalQuality(signal: number[], raw: number[], type: 'heart' | 'resp', sampleRate: number = 30): SignalMetrics['quality'] {
         if (signal.length < 30) {
             return {
                 snr: 0,
-                quality: 'poor',
-                signalStrength: 0,
-                artifactRatio: 1
+                quality: 'poor'
             };
         }
 
         try {
+            // Calculate SNR using the improved method, passing the sample rate
+            const snr = this.calculateSNR(raw, type, sampleRate);
 
-            // Calculate SNR using the improved method
-            const snr = this.calculateSNR(signal, raw, type);
-
-            // Calculate signal strength using RMS
-            const rms = Math.sqrt(signal.reduce((sum, val) => sum + val * val, 0) / signal.length);
-            const signalStrength = Math.min(Math.max(rms * 10, 0), 1);
-
-            // Calculate artifact ratio
-            const mean = signal.reduce((a, b) => a + b, 0) / signal.length;
-            const std = Math.sqrt(signal.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / signal.length);
-            const artifactRatio = signal.filter(x => Math.abs(x - mean) > 2 * std).length / signal.length;
-
-            // Determine quality level based on metrics
+            // Determine quality level based on metrics - adjusted for respiration
             let quality: SignalMetrics['quality']['quality'] = 'poor';
-            if (snr >= 10 && artifactRatio < 0.1 && signalStrength > 0.3) {
-                quality = 'excellent';
-            } else if (snr >= 5 && artifactRatio < 0.2 && signalStrength > 0.2) {
-                quality = 'good';
-            } else if (snr >= 3 && artifactRatio < 0.3) {
-                quality = 'moderate';
+
+            if (type === 'heart') {
+                if (snr >= 10) quality = 'excellent';
+                else if (snr >= 5) quality = 'good';
+                else if (snr >= 3) quality = 'moderate';
+            } else {
+                // More lenient thresholds for respiration
+                if (snr >= 8) quality = 'excellent';
+                else if (snr >= 3) quality = 'good';
+                else if (snr >= 1) quality = 'moderate';
             }
 
             return {
                 snr,
-                quality,
-                signalStrength,
-                artifactRatio
+                quality
             };
         } catch (error) {
             console.error('Error in signal quality assessment:', error);
             return {
                 snr: 0,
-                quality: 'poor',
-                signalStrength: 0,
-                artifactRatio: 1
+                quality: 'poor'
             };
         }
     }

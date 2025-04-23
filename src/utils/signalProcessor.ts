@@ -25,10 +25,10 @@ export class SignalProcessor {
     private readonly MIN_SECONDS_FOR_METRICS = 10; // Start computing metrics when we have at least this much data
     private readonly METRICS_WINDOW_SECONDS = 30;  // Use 30 seconds for metrics when available
 
-    // Constants for display and buffer management (updated per requirements)
+    // Constants for display and buffer management
     private readonly DISPLAY_SAMPLES_BVP = 300;  // 300 samples for BVP
     private readonly DISPLAY_SAMPLES_RESP = 450; // 450 samples for Resp
-    private readonly MAX_BUFFER = 1800;          // 1800 samples maximum buffer size
+    private readonly MAX_BUFFER = 18000;          // 18000 samples maximum buffer size
 
     // ButterworthFilter Vandpass Filters
     private bvpFilter: ButterworthFilter;
@@ -40,7 +40,7 @@ export class SignalProcessor {
     private readonly BVP_MA_WINDOW: number;
     private readonly RESP_MA_WINDOW: number;
 
-    // Signal buffers
+    // Signal buffers - only raw signals are stored
     private bvpBuffer: SignalBuffer;
     private respBuffer: SignalBuffer;
     private timestamps: string[] = [];
@@ -48,7 +48,7 @@ export class SignalProcessor {
     // Rolling buffers for rate history (for median calculation)
     private bvpRateHistory: number[] = [];
     private respRateHistory: number[] = [];
-    private readonly RATE_HISTORY_MAX_SIZE = 5; // Store 5 rate values for median calculation as per requirements
+    private readonly RATE_HISTORY_MAX_SIZE = 6; // Store 6 rate values for median calculation
 
     // Tracking for buffer management strategy
     private isInitialProcessingDone: boolean = false;
@@ -62,7 +62,6 @@ export class SignalProcessor {
     private displayRespRate: number = 0;
 
     private _lastInferenceTime: number = 0;
-    private _normalizationCache: Map<string, { input: number[], params: { min: number, max: number, lowerBound: number, upperBound: number }, output: number[] }> = new Map();
 
 
     constructor(fps: number = 30) {
@@ -78,7 +77,7 @@ export class SignalProcessor {
 
         // Initialize stateful Butterworth filters
         this.bvpFilter = new ButterworthFilter(ButterworthFilter.designBandpass("bvp", this.fps));
-        this.respFilter = new ButterworthFilter(ButterworthFilter.designBandpass("resp", this.fps))
+        this.respFilter = new ButterworthFilter(ButterworthFilter.designBandpass("resp", this.fps));
     }
 
     private createBuffer(): SignalBuffer {
@@ -183,9 +182,6 @@ export class SignalProcessor {
             return this.getEmptyResults();
         }
 
-        // Track the initial processing state
-        const wasInitiallyProcessed = this.isInitialProcessingDone;
-
         // Process signals differently based on whether it's the first processing or a subsequent one
         if (!this.isInitialProcessingDone) {
             // Initial processing - add all samples
@@ -199,10 +195,6 @@ export class SignalProcessor {
             console.log(`Initial RESP segment: length=${respSignal.length}, min=${Math.min(...respSignal)}, max=${Math.max(...respSignal)}`);
         } else {
             // Subsequent processing - handle overlap
-            // BVP and Resp signals will be INITIAL_FRAMES - 1 samples long (180)
-            // We need to handle the overlap of OVERLAP_FRAMES (60) samples
-
-            // Retain overlapping samples for continuity
             const overlapBvpSamples = bvpSignal.slice(0, this.OVERLAP_FRAMES);
             const overlapRespSamples = respSignal.slice(0, this.OVERLAP_FRAMES);
 
@@ -221,38 +213,35 @@ export class SignalProcessor {
         const uniqueTimestamp = timestamp || new Date().toISOString();
         this.timestamps.push(uniqueTimestamp);
 
-        // Maintain buffer size with growth for export (max 1800 samples as per requirements)
+        // Maintain buffer size with growth for export (max MAX_BUFFER samples as per requirements)
         this.maintainBufferSize();
-
-        // Get session duration to determine if we have enough data for metrics
-        const sessionDurationSeconds = (Date.now() - this.sessionStartTime) / 1000;
 
         // Default metrics (used if we don't have enough data)
         let bvpMetrics: SignalMetrics = {
             rate: 0,
-            quality: { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 }
+            quality: { quality: 'poor', snr: 0}
         };
 
         let respMetrics: SignalMetrics = {
             rate: 0,
-            quality: { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 }
+            quality: { quality: 'poor', snr: 0}
         };
 
-        // Check if we have minimum data for metrics computation - use raw buffer length now
-        const hasMinimumData = sessionDurationSeconds >= this.MIN_SECONDS_FOR_METRICS &&
+        // Check if we have minimum data for metrics computation
+        const hasMinimumData =
             this.bvpBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS &&
             this.respBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS;
 
         if (hasMinimumData) {
-            // For BVP metrics, use most recent DISPLAY_SAMPLES_BVP samples
+            // For BVP metrics, use maximum of METRICS_WINDOW_SECONDS samples
             const bvpWindowSamples = Math.min(
-                this.DISPLAY_SAMPLES_BVP,
+                this.fps * this.METRICS_WINDOW_SECONDS,
                 this.bvpBuffer.raw.length
             );
 
-            // For Resp metrics, use most recent DISPLAY_SAMPLES_RESP samples
+            // For Resp metrics, use maximum of METRICS_WINDOW_SECONDS samples
             const respWindowSamples = Math.min(
-                this.DISPLAY_SAMPLES_RESP,
+                this.fps * this.METRICS_WINDOW_SECONDS,
                 this.respBuffer.raw.length
             );
 
@@ -339,7 +328,8 @@ export class SignalProcessor {
 
         // Calculate rolling mean for DC removal using the most recent data
         // This approach puts more emphasis on recent values
-        const MEAN_WINDOW = Math.min(300, buffer.raw.length); // Use at most 300 samples for mean calculation
+        const windowSize = type === 'heart' ? this.DISPLAY_SAMPLES_BVP : this.DISPLAY_SAMPLES_RESP;
+        const MEAN_WINDOW = Math.min(windowSize, buffer.raw.length); // Use at most 300 samples for mean calculation
         const recentValues = buffer.raw.slice(-MEAN_WINDOW);
 
         if (type === 'heart') {
@@ -347,12 +337,9 @@ export class SignalProcessor {
         } else {
             this.RESP_Mean = recentValues.reduce((sum, val) => sum + val, 0) / recentValues.length;
         }
-
-        // Maintain maximum buffer size
-        this.enforceBufferSize(buffer);
     }
 
-    // Modified processSegment to use stateful filtering
+    // Process signal segment through filter
     private processSegment(signal: number[], type: 'heart' | 'resp'): number[] {
         if (signal.length === 0) return [];
 
@@ -399,31 +386,24 @@ export class SignalProcessor {
         }
     }
 
-    private enforceBufferSize(buffer: SignalBuffer): void {
-        const maxSize = this.MAX_BUFFER;
-
-        if (buffer.raw.length > maxSize) {
-            const overflow = buffer.raw.length - maxSize;
-            // Remove elements directly rather than creating new arrays with slice
-            buffer.raw.splice(0, overflow);
-            buffer.normalized.splice(0, overflow);
-
-            // If rates array needs trimming
-            if (buffer.rates.length > maxSize) {
-                buffer.rates.splice(0, buffer.rates.length - maxSize);
-            }
-        }
-    }
-
+    // Maintain buffer size for raw signals and timestamps
     private maintainBufferSize(): void {
         const maxSize = this.MAX_BUFFER;
 
         if (this.bvpBuffer.raw.length > maxSize) {
             this.bvpBuffer.raw = this.bvpBuffer.raw.slice(-maxSize);
+            this.bvpBuffer.normalized = this.bvpBuffer.normalized.slice(-maxSize);
+            if (this.bvpBuffer.rates.length > maxSize) {
+                this.bvpBuffer.rates = this.bvpBuffer.rates.slice(-maxSize);
+            }
         }
 
         if (this.respBuffer.raw.length > maxSize) {
             this.respBuffer.raw = this.respBuffer.raw.slice(-maxSize);
+            this.respBuffer.normalized = this.respBuffer.normalized.slice(-maxSize);
+            if (this.respBuffer.rates.length > maxSize) {
+                this.respBuffer.rates = this.respBuffer.rates.slice(-maxSize);
+            }
         }
 
         if (this.timestamps.length > maxSize) {
@@ -439,7 +419,7 @@ export class SignalProcessor {
         if (!this.isCapturing) {
             return {
                 rate: 0,
-                quality: { quality: 'poor', snr: 0, artifactRatio: 1.0, signalStrength: 0 }
+                quality: { quality: 'poor', snr: 0}
             };
         }
 
@@ -513,11 +493,12 @@ export class SignalProcessor {
             console.error(`Error calculating ${type} metrics:`, error);
             return {
                 rate: 0,
-                quality: { quality: 'poor', snr: 0.01, artifactRatio: 1.0, signalStrength: 0 }
+                quality: { quality: 'poor', snr: 0.01}
             };
         }
     }
 
+    // Prepare data for display (charts) - process raw signals on demand
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
         if (!this.isCapturing || this.bvpBuffer.raw.length === 0) {
             return { bvp: [], resp: [], filteredBvp: [], filteredResp: [] };
@@ -530,8 +511,9 @@ export class SignalProcessor {
         const bvpRawDisplay = this.bvpBuffer.raw.slice(-bvpDisplaySamples);
         const respRawDisplay = this.respBuffer.raw.slice(-respDisplaySamples);
 
-        // Generate filtered data on-demand only for display
+        // Process BVP signal on demand
         const bvpFiltered = this.processSegment(bvpRawDisplay, 'heart');
+        // Process RESP signal on demand
         const respFiltered = this.processSegment(respRawDisplay, 'resp');
 
         // Normalize filtered data for display
@@ -546,98 +528,24 @@ export class SignalProcessor {
         };
     }
 
-    private normalizeForDisplay(signal: number[]): number[] {
-        if (signal.length === 0) return [];
+    // Normalize data for display
+    private normalizeForDisplay(data: number[]): number[] {
+        if (!data.length) return [];
 
-        // Create a cache key based on signal characteristics
-        // Using first, last, length, and sum as a unique fingerprint
-        const cacheKey = `${signal.length}:${signal[0]}:${signal[signal.length - 1]}:${signal.reduce((a, b) => a + b, 0).toFixed(2)}`;
+        // Find min and max
+        let min = Number.MAX_VALUE;
+        let max = Number.MIN_VALUE;
 
-        // Check cache first
-        if (this._normalizationCache.has(cacheKey)) {
-            const cached = this._normalizationCache.get(cacheKey)!;
-
-            // Verify the cached data is still valid by checking key parameters 
-            if (cached.input.length === signal.length) {
-                // Fast path for when the signal is exactly the same
-                if (signal === cached.input) {
-                    return cached.output;
-                }
-
-                // Use cached normalization parameters but apply to current signal
-                const params = cached.params;
-
-                // Apply normalization without strict clamping
-                return signal.map(val => {
-                    if (!isFinite(val) || isNaN(val)) return 0;
-                    // Normalize to -1 to 1 range based on the full signal range
-                    return (2 * (val - params.min) / (params.max - params.min)) - 1;
-                });
-            }
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] < min) min = data[i];
+            if (data[i] > max) max = data[i];
         }
 
-        // Find actual min/max values instead of using IQR-based outlier detection
-        const validValues = signal.filter(val => isFinite(val) && !isNaN(val));
+        // Avoid division by zero
+        if (min === max) return data.map(() => 0);
 
-        // Handle edge cases
-        if (validValues.length === 0) {
-            const defaultValue = 0;
-            const result = signal.map(() => defaultValue);
-
-            // Cache this result
-            this._normalizationCache.set(cacheKey, {
-                input: signal,
-                params: { min: -1, max: 1, lowerBound: -1, upperBound: 1 },
-                output: result
-            });
-
-            return result;
-        }
-
-        // Calculate actual min/max from all valid values
-        const min = Math.min(...validValues);
-        const max = Math.max(...validValues);
-        const range = max - min;
-
-        // Handle constant signal case
-        if (range === 0 || range < 1e-10) {
-            const constValue = 0;
-            const result = signal.map(() => constValue);
-
-            // Cache this result
-            this._normalizationCache.set(cacheKey, {
-                input: signal,
-                params: { min, max: min + 1, lowerBound: min, upperBound: max },
-                output: result
-            });
-
-            return result;
-        }
-
-        // Apply normalization without clamping - use the full signal range
-        const result = signal.map(val => {
-            if (!isFinite(val) || isNaN(val)) return 0;
-            // Normalize to -1 to 1 range
-            return (2 * (val - min) / range) - 1;
-        });
-
-        // Cache the result for future use
-        this._normalizationCache.set(cacheKey, {
-            input: signal,
-            params: { min, max, lowerBound: min, upperBound: max },
-            output: result
-        });
-
-        // Limit cache size to prevent memory leaks
-        if (this._normalizationCache.size > 20) {
-            // Remove oldest entry (first key in the map)
-            const oldestKey = this._normalizationCache.keys().next().value;
-            if (oldestKey !== undefined) {
-                this._normalizationCache.delete(oldestKey);
-            }
-        }
-
-        return result;
+        // Normalize to [-1, 1] range
+        return data.map(val => 2 * ((val - min) / (max - min)) - 1);
     }
 
 
@@ -653,16 +561,13 @@ export class SignalProcessor {
             totalSamples: Math.max(this.bvpBuffer.raw.length, this.respBuffer.raw.length)
         };
 
-        // Format signals - filter raw data on demand for export only
+        // Format signals - ONLY include raw signals as requested
         const signals = {
             bvp: {
-                raw: Array.from(this.bvpBuffer.raw),
-                // Only generate filtered data during export
-                filtered: Array.from(this.processSegment(this.bvpBuffer.raw, 'heart'))
+                raw: Array.from(this.bvpBuffer.raw)
             },
             resp: {
-                raw: Array.from(this.respBuffer.raw),
-                filtered: Array.from(this.processSegment(this.respBuffer.raw, 'resp'))
+                raw: Array.from(this.respBuffer.raw)
             }
         };
 
@@ -689,6 +594,7 @@ export class SignalProcessor {
         this.bvpBuffer = this.createBuffer();
         this.respBuffer = this.createBuffer();
         this.timestamps = [];
+        this.isCapturing = false;
         this.isInitialProcessingDone = false;
         this.sessionStartTime = 0;
         this.bvpRateHistory = [];

@@ -14,6 +14,37 @@ def load_data(file_path):
     return data
 
 
+def calculate_actual_sampling_rate(data):
+    """Calculate the actual sampling rate from metadata."""
+    try:
+        # Get start and end times from metadata
+        start_time = datetime.fromisoformat(
+            data['metadata']['startTime'].replace('Z', '+00:00'))
+        end_time = datetime.fromisoformat(
+            data['metadata']['endTime'].replace('Z', '+00:00'))
+
+        # Calculate duration in seconds
+        duration = (end_time - start_time).total_seconds()
+
+        # Get number of samples
+        num_samples = len(data['signals']['bvp']['raw'])
+
+        # Calculate actual sampling rate
+        actual_fs = num_samples / \
+            duration if duration > 0 else data['metadata'].get(
+                'samplingRate', 30)
+
+        print(f"Calculated actual sampling rate: {actual_fs:.2f} Hz")
+        print(f"Duration: {duration:.2f}s, Samples: {num_samples}")
+
+        # Return the actual sampling rate, but use at least 10 Hz as minimum
+        return max(actual_fs, 10)
+    except Exception as e:
+        print(f"Error calculating actual sampling rate: {e}")
+        # Fall back to metadata sampling rate or default
+        return data['metadata'].get('samplingRate', 30)
+
+
 def apply_butterworth_bandpass(signal_data, fs, lowcut, highcut, order=4):
     """Apply Butterworth bandpass filter to the signal."""
     nyquist = 0.5 * fs
@@ -121,17 +152,20 @@ def remove_dc(signal_data):
     return signal_data - np.mean(signal_data)
 
 
-def plot_signals(data, bvp_filtered, resp_filtered, hr, rr, file_path="data/sample_data.json"):
+def plot_signals(data, bvp_filtered, resp_filtered, hr, rr, actual_fs, file_path="data/sample_data.json"):
     """Plot raw and filtered signals with computed heart and respiratory rates."""
-    sampling_rate = data['metadata']['samplingRate']
+    sampling_rate = data['metadata']['samplingRate']  # Nominal sampling rate
+    samples = len(data['signals']['bvp']['raw'])
+
     start_time = datetime.fromisoformat(
         data['metadata']['startTime'].replace('Z', '+00:00'))
-    end_time = datetime.fromisoformat(
-        data['metadata']['endTime'].replace('Z', '+00:00'))
-    duration = (end_time - start_time).total_seconds()
+    # end_time = datetime.fromisoformat(
+    #     data['metadata']['endTime'].replace('Z', '+00:00'))
+    # duration = (end_time - start_time).total_seconds()
+    duration = samples / actual_fs
 
     # Create time arrays
-    samples = len(data['signals']['bvp']['raw'])
+
     time = np.linspace(0, duration, samples)
 
     # Create plot figure
@@ -148,10 +182,11 @@ def plot_signals(data, bvp_filtered, resp_filtered, hr, rr, file_path="data/samp
     plt.grid(True)
     plt.legend()
 
-    # Add metadata annotation
+    # Add metadata annotation with actual sampling rate
     plt.annotate(f'Start Time: {start_time.strftime("%Y-%m-%d %H:%M:%S")}\n'
                  f'Duration: {duration:.2f} s\n'
-                 f'Sampling Rate: {sampling_rate} Hz\n'
+                 f'Nominal Sampling Rate: {sampling_rate} Hz\n'
+                 f'Actual Sampling Rate: {actual_fs:.2f} Hz\n'
                  f'Samples: {samples}',
                  xy=(0.02, 0.02), xycoords='axes fraction',
                  bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.8))
@@ -204,10 +239,11 @@ def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_fre
 
     # Set appropriate title and labels based on signal type
     if title == 'BVP':
-        plt.title(f'Heart Rate Spectrum - {title}')
+        plt.title(f'Heart Rate Spectrum - {title} (Actual FS: {fs:.2f} Hz)')
         plt.xlabel('Heart Rate (BPM)')
     elif title == 'Respiratory':
-        plt.title(f'Respiratory Rate Spectrum - {title}')
+        plt.title(
+            f'Respiratory Rate Spectrum - {title} (Actual FS: {fs:.2f} Hz)')
         plt.xlabel('Respiratory Rate (breaths/min)')
     else:
         plt.title(f'Frequency Spectrum - {title}')
@@ -237,21 +273,25 @@ def plot_frequency_spectrum(signal_data, fs, title, y_label, min_freq=0, max_fre
     plt.savefig(output_file)
 
 
-def main(file_path, sampling_rate=15):
+def main(file_path, sampling_rate_override=None):
     # Load the JSON data
     data = load_data(file_path)
+
+    # Calculate actual sampling rate from metadata
+    actual_sampling_rate = calculate_actual_sampling_rate(data)
+
+    # Use override if provided, otherwise use calculated actual rate
+    sampling_rate = sampling_rate_override if sampling_rate_override else actual_sampling_rate
 
     # Extract signals and metadata
     bvp_raw = np.array(data['signals']['bvp']['raw'])
     resp_raw = np.array(data['signals']['resp']['raw'])
-    # Use provided sampling rate instead of hardcoded value
-    # sampling_rate = 15 # data['metadata']['samplingRate']
 
     # Remove DC component
     bvp_dc_removed = remove_dc(bvp_raw)
     resp_dc_removed = remove_dc(resp_raw)
 
-    # Apply Butterworth bandpass filter
+    # Apply Butterworth bandpass filter with actual sampling rate
     # Heart rate: 0.6-3.3 Hz (36-198 BPM)
     bvp_filtered = apply_butterworth_bandpass(
         bvp_dc_removed, sampling_rate, 0.6, 3.3)
@@ -260,11 +300,11 @@ def main(file_path, sampling_rate=15):
     resp_filtered = apply_butterworth_bandpass(
         resp_dc_removed, sampling_rate, 0.1, 0.54)
 
-    # Calculate heart rate and respiratory rate using FFT
+    # Calculate heart rate and respiratory rate using FFT with actual sampling rate
     hr = calculate_heart_rate(bvp_filtered, sampling_rate)
     rr = calculate_respiratory_rate(resp_filtered, sampling_rate)
 
-    # Plot frequency spectrums
+    # Plot frequency spectrums with actual sampling rate
     plot_frequency_spectrum(bvp_filtered, sampling_rate,
                             'BVP', 'Magnitude', max_freq=5, file_path=file_path)
     plot_frequency_spectrum(resp_filtered, sampling_rate,
@@ -272,7 +312,7 @@ def main(file_path, sampling_rate=15):
 
     # Plot signals and results
     plot_signals(data, bvp_filtered, resp_filtered,
-                 hr, rr, file_path=file_path)
+                 hr, rr, sampling_rate, file_path=file_path)
 
     # Compare with values in the JSON file
     # Calculate median heart rate and respiratory rate from the JSON data
@@ -288,6 +328,13 @@ def main(file_path, sampling_rate=15):
     print(
         f"Computed RR: {rr:.1f} breaths/min vs Median recorded RR: {median_rr:.1f} breaths/min")
 
+    print(
+        f"\nNominal sampling rate: {data['metadata'].get('samplingRate', 'unknown')} Hz")
+    print(f"Actual calculated sampling rate: {actual_sampling_rate:.2f} Hz")
+    if sampling_rate_override:
+        print(
+            f"Using manual override sampling rate: {sampling_rate_override} Hz")
+
 
 if __name__ == "__main__":
     # Set up argument parser
@@ -295,8 +342,8 @@ if __name__ == "__main__":
         description='Process vital signs data from a JSON file')
     parser.add_argument('file_path', type=str,
                         help='Path to the JSON file containing vital signs data')
-    parser.add_argument('--sampling_rate', type=int, default=30,
-                        help='Sampling rate in Hz (default: 30)')
+    parser.add_argument('--sampling_rate', type=int,
+                        help='Override sampling rate in Hz (optional)')
 
     # Parse arguments
     args = parser.parse_args()

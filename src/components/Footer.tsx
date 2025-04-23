@@ -6,6 +6,12 @@ const Footer: React.FC = () => {
             <div className="container mx-auto px-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
+                        <h3 className="font-semibold mb-2">Data Privacy Note:</h3>
+                        <p className="text-sm text-gray-600">
+                            Videos are processed entirely on your device and are never uploaded to any server. The loaded videos as well as the captured video frames are immediately discarded after processing.
+                        </p>
+                    </div>
+                    <div>
                         <h3 className="font-semibold mb-2">Citation:</h3>
                         <p className="text-sm text-gray-600">
                             Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", In Review, 2025<br />
