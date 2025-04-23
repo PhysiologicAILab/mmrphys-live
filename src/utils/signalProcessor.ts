@@ -127,8 +127,7 @@ export class SignalProcessor {
         // Don't reset the data buffers - we need to preserve them for export
         console.log('[SignalProcessor] Processing halted, data preserved for export');
     }
-
-
+    
     // Method to return empty results when not capturing
     private getEmptyResults(): {
         bvp: SignalMetrics,

@@ -37,14 +37,16 @@ const VideoDisplay: React.FC<VideoDisplayProps> = ({
                     height={256}
                     className="w-full h-full object-cover"
                 />
-                {bufferProgress > 0 && bufferProgress < 100 && (
+                {isCapturing && bufferProgress > 0 && (
                     <div className="buffer-progress">
                         <div
                             className="progress-bar"
                             style={{ width: `${bufferProgress}%` }}
                         />
                         <span className="progress-text">
-                            {Math.round(bufferProgress)}% Ready
+                            {bufferProgress < 100
+                                ? `${Math.round(bufferProgress)}% Ready`
+                                : 'Processing...'}
                         </span>
                     </div>
                 )}

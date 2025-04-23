@@ -34,7 +34,7 @@ export class VideoProcessor {
     private readonly FACE_DISTANCE_THRESHOLD = 0.15; // 15% of frame width threshold
     private faceBoxHistory: FaceBox[] = [];
     private readonly FACE_HISTORY_SIZE = 5;
-    private isVideoFileSource: boolean = false;
+    private _isVideoFileSource: boolean = false;
     private onVideoComplete: (() => void) | null = null;
     private faceDetectionActive: boolean = false;
 
@@ -79,6 +79,33 @@ export class VideoProcessor {
         this.setupContexts();
     }
 
+    public getVideoElement(): HTMLVideoElement {
+        return this.videoElement;
+    }
+
+    // Add this property to be externally readable 
+    public get isVideoFileSource(): boolean {
+        return this._isVideoFileSource;
+    }
+
+    public resetVideoState(): void {
+        // Clear any ended state and prepare for a new video
+        this._isShuttingDown = false;
+
+        if (this.videoElement) {
+            this.videoElement.pause();
+            this.videoElement.currentTime = 0;
+
+            // If there was a previous video, we need to ensure the ended flag is reset
+            // This can be forced by reloading the video element
+            if (this.videoElement.ended) {
+                this.videoElement.load();
+            }
+        }
+
+        console.log('[VideoProcessor] Video state has been reset');
+    }
+    
     private calculateCurrentFPS(): number {
         if (this.frameTimestamps.length < 2) return 0;
 
@@ -107,85 +134,158 @@ export class VideoProcessor {
 
     // Modified for video file loading
     async loadVideoFile(file: File): Promise<void> {
-        // Stop any existing capture
+        console.log('[VideoProcessor] Loading video file:', file.name);
+
+        // Stop any existing capture and cleanup resources
         await this.stopCapture();
 
         // Set flag to indicate we're using a video file
-        this.isVideoFileSource = true;
+        this._isVideoFileSource = true;
+
+        // Reset shutdown flag explicitly
+        this._isShuttingDown = false;
 
         // Create a URL for the file
         const videoURL = URL.createObjectURL(file);
 
-        // Reset buffers
+        // Reset buffers and state completely
         this.frameBuffer = [];
         this.newFramesBuffer = [];
         this.frameCount = 0;
         this.faceBoxHistory = [];
+        this.frameTimestamps = [];
+        this.lastFrameTime = 0;
+        this.currentFaceBox = null;
 
-        // Set the video element source
+        // Reset the video element's state more thoroughly
+        this.videoElement.pause();
+        this.videoElement.currentTime = 0;
+
+        // If there was a previous video file, properly cleanup
+        if (this.videoElement.src) {
+            const oldSrc = this.videoElement.src;
+            this.videoElement.removeAttribute('src');
+            this.videoElement.load();
+
+            // Release memory from any previous object URL
+            if (oldSrc.startsWith('blob:')) {
+                URL.revokeObjectURL(oldSrc);
+            }
+        }
+
+        // Set new video source with explicit properties
         this.videoElement.src = videoURL;
         this.videoElement.muted = true;
-        this.videoElement.playbackRate = 0.8;
+        this.videoElement.playbackRate = 2.0; // Fast playback for video files
+        this.videoElement.loop = false;      // Ensure no looping
 
-        // Wait for video metadata to load
+        console.log('[VideoProcessor] Video file loaded, isVideoFileSource=true');
+
+        // Wait for video metadata to load with better error handling
         return new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => {
                 reject(new Error('Video loading timeout'));
+                URL.revokeObjectURL(videoURL); // Clean up the URL
             }, 10000);
+
+            const handleError = (e: Event) => {
+                clearTimeout(timeout);
+                URL.revokeObjectURL(videoURL);
+                reject(new Error(`Failed to load video file: ${e.type}`));
+            };
+
+            this.videoElement.onerror = (e) => {
+                if (e instanceof Event) {
+                    handleError(e);
+                } else {
+                    console.error('Unexpected error type:', e);
+                }
+            };
 
             this.videoElement.onloadedmetadata = () => {
                 clearTimeout(timeout);
 
-                // Initialize face detector if needed
+                console.log('[VideoProcessor] Video metadata loaded:', {
+                    duration: this.videoElement.duration,
+                    width: this.videoElement.videoWidth,
+                    height: this.videoElement.videoHeight
+                });
+
+                // Initialize face detector and start processing in sequence
                 const initializeAndStartProcessing = async () => {
-
-                    // Always reinitialize the face detector completely
-                    if (this.faceDetector.isInitialized) {
-                        this.faceDetector.stopDetection();
-                        this.faceDetector.noDetectionCount = 0;
-                        await this.faceDetector.dispose(); // Properly dispose the detector
-                    }
-                    console.log('Reinitializing face detector...');
-                    await this.faceDetector.initialize();
-                    this.faceDetector.setCapturingState(true); // Ensure capturing state is set
-
-
-                    await this.loadConfigSettings();
-
-                    // Run initial face detection without blocking
                     try {
-                        await this.videoElement.play();
-                        await new Promise(r => setTimeout(r, 100));
+                        // Always reinitialize the face detector completely
+                        if (this.faceDetector.isInitialized) {
+                            this.faceDetector.stopDetection();
+                            this.faceDetector.noDetectionCount = 0;
+                            await this.faceDetector.dispose(); // Properly dispose the detector
+                        }
 
-                        // Start face detection but don't await it
-                        this.faceDetector.detectFace(this.videoElement).then(initialFace => {
-                            if (initialFace) {
-                                this.currentFaceBox = initialFace;
-                            }
-                            // Reset to beginning after face detection
+                        console.log('[VideoProcessor] Reinitializing face detector...');
+                        await this.faceDetector.initialize();
+                        this.faceDetector.setCapturingState(true); // Ensure capturing state is set
+
+                        // Load configuration settings
+                        await this.loadConfigSettings();
+
+                        // Run initial face detection without blocking the main flow
+                        try {
+                            await this.videoElement.play();
+                            await new Promise(r => setTimeout(r, 100));
+
+                            // Start face detection but don't await it
+                            this.faceDetector.detectFace(this.videoElement).then(initialFace => {
+                                if (initialFace) {
+                                    this.currentFaceBox = initialFace;
+                                    console.log('[VideoProcessor] Initial face detected in video');
+                                } else {
+                                    console.log('[VideoProcessor] No face detected in initial frame, using center crop');
+                                    // Set default face box for center crop
+                                    const size = Math.min(this.videoElement.videoWidth, this.videoElement.videoHeight);
+                                    this.currentFaceBox = {
+                                        x: (this.videoElement.videoWidth - size) / 2,
+                                        y: (this.videoElement.videoHeight - size) / 2,
+                                        width: size,
+                                        height: size
+                                    };
+                                }
+
+                                // Reset to beginning after face detection
+                                this.videoElement.currentTime = 0;
+                            }).catch(error => {
+                                console.warn('[VideoProcessor] Initial face detection failed:', error);
+                                this.videoElement.currentTime = 0;
+                            });
+                        } catch (error) {
+                            console.warn('[VideoProcessor] Initial video playback failed:', error);
                             this.videoElement.currentTime = 0;
-                        });
+                        }
 
+                        // Start parallel face detection
+                        this.startParallelFaceDetection();
+
+                        // Start frame processing
+                        this.startFrameProcessing();
+
+                        console.log('[VideoProcessor] Video processing initialized and started');
+                        resolve();
                     } catch (error) {
-                        console.warn('Initial video face detection failed:', error);
-                        this.videoElement.currentTime = 0;
+                        console.error('[VideoProcessor] Failed to initialize processing:', error);
+                        URL.revokeObjectURL(videoURL);
+                        reject(error);
                     }
-
-                    // Start parallel face detection
-                    this.startParallelFaceDetection();
-
-                    // Start frame processing
-                    this.startFrameProcessing();
-                    resolve();
                 };
 
-                initializeAndStartProcessing().catch(reject);
+                initializeAndStartProcessing().catch(error => {
+                    console.error('[VideoProcessor] Initialization sequence failed:', error);
+                    URL.revokeObjectURL(videoURL);
+                    reject(error);
+                });
             };
 
-            this.videoElement.onerror = () => {
-                clearTimeout(timeout);
-                URL.revokeObjectURL(videoURL);
-                reject(new Error('Failed to load video file'));
+            // Handle complete video loading success
+            this.videoElement.onloadeddata = () => {
+                console.log('[VideoProcessor] Video data fully loaded');
             };
         });
     }
@@ -194,7 +294,7 @@ export class VideoProcessor {
         try {
             // Existing setup code...
 
-            this.isVideoFileSource = false;
+            this._isVideoFileSource = false;
             await this.loadConfigSettings();
 
             // // Initialize face detector
@@ -387,7 +487,7 @@ export class VideoProcessor {
                 // For video files, consider pausing during detection to ensure it completes
                 const wasPlaying = !this.videoElement.paused;
 
-                if (this.isVideoFileSource && wasPlaying) {
+                if (this._isVideoFileSource && wasPlaying) {
                     this.videoElement.pause();
                 }
 
@@ -412,7 +512,7 @@ export class VideoProcessor {
                             console.log(`[VideoProcessor] Face detected at (${detectedFace.x.toFixed(0)},${detectedFace.y.toFixed(0)}) size: ${detectedFace.width.toFixed(0)}x${detectedFace.height.toFixed(0)}`);
                         }
                     }
-                } else if (this.isVideoFileSource) {
+                } else if (this._isVideoFileSource) {
                     // For video files, use center crop if no face detected
                     const size = Math.min(this.videoElement.videoWidth, this.videoElement.videoHeight);
                     this.currentFaceBox = {
@@ -424,7 +524,7 @@ export class VideoProcessor {
                 }
 
                 // Resume video if we paused it
-                if (this.isVideoFileSource && wasPlaying) {
+                if (this._isVideoFileSource && wasPlaying) {
                     await this.videoElement.play();
                 }
 
@@ -477,12 +577,27 @@ export class VideoProcessor {
     }
 
     private setupVideoEventListeners(): void {
+        // Listen for video end
         this.videoElement.addEventListener('ended', () => {
-            console.log('[VideoProcessor] Video playback complete');
-            // Notify any listeners that processing is complete
+            console.log('[VideoProcessor] Video playback ended');
             if (this.onVideoComplete) {
                 this.onVideoComplete();
             }
+        });
+
+        // Add seeking event to help with video navigation issues
+        this.videoElement.addEventListener('seeking', () => {
+            console.log('[VideoProcessor] Video seeking - clearing frame buffers');
+            this.newFramesBuffer = [];  // Clear new frames buffer to avoid stale frames
+        });
+
+        // Add loadeddata event to ensure we're ready to process
+        this.videoElement.addEventListener('loadeddata', () => {
+            console.log('[VideoProcessor] Video data loaded and ready to process');
+            // Reset frame counters when a new video is loaded
+            this.frameCount = 0;
+            this.newFramesBuffer = [];
+            this._isShuttingDown = false;
         });
     }
 
@@ -491,9 +606,10 @@ export class VideoProcessor {
         this._isShuttingDown = false;
 
         // Initial video playback setup for file source
-        if (this.isVideoFileSource) {
-            // Use a fixed playback rate for more consistent performance
-            this.videoElement.playbackRate = 0.8;
+        if (this._isVideoFileSource) {
+            // Start with a high playback rate for maximum processing speed
+            this.videoElement.playbackRate = 2.0;
+            console.log('[VideoProcessor] Setting initial video playback rate to 2.0 for maximum throughput');
 
             this.videoElement.play().catch(error => {
                 console.error('[VideoProcessor] Failed to play video:', error);
@@ -513,37 +629,44 @@ export class VideoProcessor {
             }
 
             // For video files, use simpler playback rate management
-            if (this.isVideoFileSource) {
-                // Only check and adjust playback rate periodically to reduce overhead
-                if (timestamp - lastAdjustmentTime > ADJUSTMENT_INTERVAL) {
-                    lastAdjustmentTime = timestamp;
+            if (timestamp - lastAdjustmentTime > ADJUSTMENT_INTERVAL) {
+                lastAdjustmentTime = timestamp;
 
-                    // Simple adaptive playback control based on backlog
-                    if (frameBacklog > 30) {
-                        // Severe backlog - pause briefly to let processing catch up
-                        this.videoElement.pause();
-                        await new Promise(r => setTimeout(r, 100));
-                        this.videoElement.play().catch(e => console.error(e));
-                        frameBacklog = Math.max(0, frameBacklog - 10); // Assume we caught up a bit
-                        console.log('[VideoProcessor] Severe backlog - paused playback briefly');
-                    }
-                    else if (frameBacklog > 20) {
-                        // Significant backlog - slow down playback
-                        this.videoElement.playbackRate = 0.5;
-                    }
-                    else if (frameBacklog > 10) {
-                        // Moderate backlog - slightly slow down
-                        this.videoElement.playbackRate = 0.7;
-                    }
-                    else {
-                        // Normal operation - use standard rate
-                        this.videoElement.playbackRate = 0.8;
+                // Adaptive playback control based on backlog
+                if (frameBacklog > 30) {
+                    // Severe backlog - pause briefly to let processing catch up
+                    this.videoElement.pause();
+                    await new Promise(r => setTimeout(r, 100));
+                    this.videoElement.play().catch(e => console.error(e));
+                    frameBacklog = Math.max(0, frameBacklog - 10);
+                    console.log('[VideoProcessor] Severe backlog - paused playback briefly');
+                }
+                else if (frameBacklog > 20) {
+                    // Significant backlog - reduce playback rate but still keep it relatively high
+                    this.videoElement.playbackRate = 1.0;
+                    console.log('[VideoProcessor] Reducing playback rate to 1.0 due to significant backlog');
+                }
+                else if (frameBacklog > 10) {
+                    // Moderate backlog - slightly reduce speed
+                    this.videoElement.playbackRate = 1.5;
+                    console.log('[VideoProcessor] Setting playback rate to 1.5 (moderate backlog)');
+                }
+                else {
+                    // No significant backlog - run as fast as possible
+                    this.videoElement.playbackRate = 2.0;
+
+                    // If backlog is very low, try going even faster
+                    if (frameBacklog < 5) {
+                        this.videoElement.playbackRate = 3.0;
+                        console.log('[VideoProcessor] Setting playback rate to 3.0 (minimal backlog)');
+                    } else {
+                        console.log('[VideoProcessor] Setting playback rate to 2.0 (normal operation)');
                     }
                 }
             }
 
             // Determine if we should process this frame
-            const shouldProcessFrame = this.isVideoFileSource ||
+            const shouldProcessFrame = this._isVideoFileSource ||
                 (timestamp - this.lastFrameTime >= this.frameInterval);
 
             if (shouldProcessFrame) {
@@ -569,7 +692,7 @@ export class VideoProcessor {
             }
 
             // Continue processing if not complete
-            const isComplete = this.isVideoFileSource && this.videoElement.ended;
+            const isComplete = this._isVideoFileSource && this.videoElement.ended;
 
             if (!this._isShuttingDown && !isComplete) {
                 this.processingFrameId = requestAnimationFrame(processFrame);
@@ -587,15 +710,18 @@ export class VideoProcessor {
     }
 
     isVideoComplete(): boolean {
-        return this.isVideoFileSource && this.videoElement.ended;
-    }    
+        // Only return true if we are actively using a video file AND it has ended
+        return this._isVideoFileSource &&
+            !this._isShuttingDown &&
+            this.videoElement.ended;
+    }   
 
     private processVideoFrame(timestamp: number): void {
         try {
             // Immediately exit if we're shutting down or config not loaded
             if (this._isShuttingDown || !this.configLoaded) {
                 if (!this.configLoaded) {
-                    console.warn('Attempting to process frame before config is loaded');
+                    console.warn('[VideoProcessor] Attempting to process frame before config is loaded');
                 }
                 return;
             }
@@ -604,6 +730,13 @@ export class VideoProcessor {
             this.frameTimestamps.push(timestamp);
             if (this.frameTimestamps.length > this.FPS_WINDOW_SIZE * 2) {
                 this.frameTimestamps = this.frameTimestamps.slice(-this.FPS_WINDOW_SIZE);
+            }
+
+            // Log more frequently for video files to help diagnose issues
+            if (this._isVideoFileSource && this.frameCount % 30 === 0) {
+                console.log(`[VideoProcessor] Processed ${this.frameCount} frames from video file`);
+                console.log(`[VideoProcessor] Buffer status: frameBuffer=${this.frameBuffer.length}, newFramesBuffer=${this.newFramesBuffer.length}`);
+                console.log(`[VideoProcessor] Video state: currentTime=${this.videoElement.currentTime.toFixed(2)}, duration=${this.videoElement.duration.toFixed(2)}`);
             }
 
             // Calculate and log FPS every 60 frames with improved dynamic adjustment
@@ -696,9 +829,21 @@ export class VideoProcessor {
                 this.frameHeight
             );
 
-            // Update both frame buffers in one pass
+            // Verify frameData is valid before adding to buffers
+            if (!frameData || frameData.width !== this.frameWidth || frameData.height !== this.frameHeight) {
+                console.error('[VideoProcessor] Invalid frame data generated',
+                    frameData ? `${frameData.width}x${frameData.height}` : 'null');
+                return;
+            }
+
+            // Update both frame buffers in one pass - ensuring we're actually adding frames
             this.frameBuffer.push(frameData);
             this.newFramesBuffer.push(frameData);
+
+            // For video files, keep detailed logs of buffer state to diagnose issues
+            if (this._isVideoFileSource && this.frameCount % 10 === 0) {
+                console.log(`[VideoProcessor] Frame buffers updated: total=${this.frameBuffer.length}, new=${this.newFramesBuffer.length}`);
+            }
 
             // Maintain maximum buffer size for frameBuffer
             // Use a more efficient approach than while loop for large buffers
@@ -707,12 +852,30 @@ export class VideoProcessor {
                 this.frameBuffer = this.frameBuffer.slice(extraFrames);
             }
 
-            // Notify frame processed
+            // Notify frame processed - always call this for consistent behavior
             if (this.onFrameProcessed) {
                 this.onFrameProcessed(frameData);
             }
+
+            // For video files, check if we're near the end and log
+            if (this._isVideoFileSource &&
+                this.videoElement.duration > 0 &&
+                this.videoElement.currentTime > (this.videoElement.duration * 0.95)) {
+                console.log(`[VideoProcessor] Approaching end of video: ${this.videoElement.currentTime.toFixed(2)}/${this.videoElement.duration.toFixed(2)}`);
+            }
         } catch (error) {
-            console.error('Frame processing error:', error);
+            console.error('[VideoProcessor] Frame processing error:', error);
+
+            // Even on error, try to continue processing next frames
+            // But log detailed diagnostic info to help debug
+            console.error('[VideoProcessor] Error details:', {
+                videoReady: this.videoElement.readyState,
+                currentTime: this.videoElement.currentTime,
+                isEnded: this.videoElement.ended,
+                frameCount: this.frameCount,
+                bufferLength: this.frameBuffer.length,
+                newFramesLength: this.newFramesBuffer.length
+            });
         }
     }
 
@@ -865,9 +1028,14 @@ export class VideoProcessor {
 
     isCapturing(): boolean {
         // Check if we're using a video file source
-        if (this.isVideoFileSource) {
-            // For video files, we're capturing if not shutting down and video isn't ended
-            return !this._isShuttingDown && !this.videoElement.ended && this.videoElement.readyState >= 2;
+        if (this._isVideoFileSource) {
+            // For video files, check if we're in a valid playback state
+            // Don't rely just on readyState - explicitly check the video isn't ended
+            // and that we're not shutting down
+            return !this._isShuttingDown &&
+                this.videoElement.readyState >= 2 &&
+                !this.videoElement.ended &&
+                this.videoElement.duration > 0;
         }
 
         // For camera capture, check media stream

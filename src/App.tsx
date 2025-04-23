@@ -234,6 +234,7 @@ const App: React.FC = () => {
         if (progressIntervalRef.current) {
             clearInterval(progressIntervalRef.current);
             progressIntervalRef.current = null;
+            console.log('[App] Cleared existing monitoring interval');
         }
 
         // First verify that all required components are initialized
@@ -269,18 +270,30 @@ const App: React.FC = () => {
         // Force local monitoring state regardless of React state
         let isMonitoringActive = true;
 
-        // Implement capture state check directly through videoProcessor instead of React state
+        // Check if capture is still active
         const isCurrentlyCapturing = () => {
-            return videoProcessorRef.current?.isCapturing() || false;
+            const isCapturing = videoProcessorRef.current?.isCapturing() || false;
+
+            // For video files, additionally check that video is ready and not ended
+            if (isCapturing && videoProcessorRef.current?.isVideoFileSource) {
+                const videoElement = videoProcessorRef.current.getVideoElement();
+                if (videoElement && videoElement.ended) {
+                    console.log('[App] Video has ended, stopping capture');
+                    return false;
+                }
+            }
+
+            return isCapturing;
         };
 
         console.log('[App] Starting monitoring interval - system ready');
 
+        // Set up the main monitoring interval
         progressIntervalRef.current = window.setInterval(() => {
             // Immediately check if we should continue
             if (!isCurrentlyCapturing() || !isMonitoringActive || !isInitialized) {
                 if (isMonitoringActive) {
-                    console.log('[App] Stopping monitoring - capture inactive');
+                    console.log('[App] Stopping monitoring - capture inactive or system not ready');
                     isMonitoringActive = false;
                     if (progressIntervalRef.current) {
                         clearInterval(progressIntervalRef.current);
@@ -290,78 +303,107 @@ const App: React.FC = () => {
                 return;
             }
 
-            // Update buffer progress UI
-            if (videoProcessorRef.current) {
-                // Get new frames since last check
-                const newFrames = videoProcessorRef.current.getNewFrames();
+            // Check if we're processing a video file
+            const isVideoFile = videoProcessorRef.current?.isVideoFileSource || false;
 
-                if (newFrames && newFrames.length > 0) {
-                    const { frames, initialCollectionComplete, framesSinceLastInference } = frameCollectionRef.current;
+            // Get new frames since last check
+            const newFrames = videoProcessorRef.current?.getNewFrames() || [];
 
-                    // Add new frames to collection
-                    frames.push(...newFrames);
-                    frameCollectionRef.current.framesSinceLastInference += newFrames.length;
+            if (isVideoFile && newFrames.length > 0) {
+                console.log(`[App] Received ${newFrames.length} new frames from video file`);
+            }
 
-                    // Calculate and update progress
-                    const targetFrames = initialCollectionComplete ? SUBSEQUENT_FRAMES : INITIAL_FRAMES;
-                    const progress = Math.min(100, (framesSinceLastInference / targetFrames) * 100);
-                    
-                    if (!initialCollectionComplete) {
-                        setBufferProgress(progress);
+            if (newFrames.length > 0) {
+                const { frames, initialCollectionComplete, framesSinceLastInference } = frameCollectionRef.current;
+
+                // Add new frames to collection
+                frames.push(...newFrames);
+                frameCollectionRef.current.framesSinceLastInference += newFrames.length;
+
+                // Calculate and update progress
+                const targetFrames = initialCollectionComplete ? SUBSEQUENT_FRAMES : INITIAL_FRAMES;
+                const progress = Math.min(100, (framesSinceLastInference / targetFrames) * 100);
+
+                // Always show progress for better visual feedback
+                if (!initialCollectionComplete) {
+                    // Initial collection - show actual progress
+                    setBufferProgress(progress);
+
+                    if (isVideoFile && framesSinceLastInference % 30 === 0) {
+                        console.log(`[App] Initial video processing progress: ${progress.toFixed(1)}%, frames: ${framesSinceLastInference}/${targetFrames}`);
                     }
-                    else {
-                        setBufferProgress(100);
+                }
+                else {
+                    // For both live capture and video files, set to 100% after initial collection
+                    setBufferProgress(100);
+
+                    if (isVideoFile && framesSinceLastInference % 30 === 0) {
+                        console.log(`[App] Video processing ongoing: ${framesSinceLastInference}/${targetFrames} frames (${progress.toFixed(1)}%)`);
+                    }
+                }
+
+                // Check if we have enough frames for inference
+                if (!initialCollectionComplete && frames.length >= INITIAL_FRAMES) {
+                    console.log(`[App] Initial collection complete: ${frames.length} frames - sending for inference`);
+
+                    if (inferenceWorkerRef.current) {
+                        // Send all collected frames
+                        inferenceWorkerRef.current.postMessage({
+                            type: 'inferenceResult',
+                            frameBuffer: frames.slice(-INITIAL_FRAMES), // Send last 181 frames
+                            timestamp: window.performance.now(),
+                            isInitialBatch: true
+                        });
                     }
 
-                    // console.log(`[App] Collected ${framesSinceLastInference}/${targetFrames} frames (${progress.toFixed(1)}%)`);
-                
-                    // Check if we have enough frames for inference
-                    if (!initialCollectionComplete && frames.length >= INITIAL_FRAMES) {
-                        // Initial collection complete - send all frames
-                        // console.log(`[App] Initial collection complete: ${frames.length} frames`);
-                        
-                        if (inferenceWorkerRef.current) {
-                            inferenceWorkerRef.current.postMessage({
-                                type: 'inferenceResult',
-                                frameBuffer: frames.slice(-INITIAL_FRAMES), // Send last 181 frames
-                                timestamp: window.performance.now(),
-                                isInitialBatch: true
-                            });
+                    // Update collection state
+                    frameCollectionRef.current.initialCollectionComplete = true;
+                    frameCollectionRef.current.framesSinceLastInference = 0;
+
+                    // Keep only the overlap frames for next batch
+                    frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
+
+                } else if (initialCollectionComplete && framesSinceLastInference >= SUBSEQUENT_FRAMES) {
+                    console.log(`[App] Subsequent batch complete: ${framesSinceLastInference} new frames - sending for inference`);
+
+                    if (inferenceWorkerRef.current) {
+                        // Send overlap frames + new frames (total should be INITIAL_FRAMES)
+                        inferenceWorkerRef.current.postMessage({
+                            type: 'inferenceResult',
+                            frameBuffer: frames.slice(-INITIAL_FRAMES),
+                            timestamp: window.performance.now(),
+                            isInitialBatch: false
+                        });
+                    }
+
+                    // Reset counter and keep overlap
+                    frameCollectionRef.current.framesSinceLastInference = 0;
+
+                    // Keep only the overlap frames for next batch
+                    frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
+
+                }
+            } else if (isVideoFile && frameCollectionRef.current.initialCollectionComplete) {
+                // No new frames from video - might be paused or ended
+                // Check video state
+                const videoElement = videoProcessorRef.current?.getVideoElement();
+                if (videoElement) {
+                    if (videoElement.ended) {
+                        console.log('[App] Video has ended, stopping monitoring');
+                        if (progressIntervalRef.current) {
+                            clearInterval(progressIntervalRef.current);
+                            progressIntervalRef.current = null;
                         }
-
-                        // Update collection state
-                        frameCollectionRef.current.initialCollectionComplete = true;
-                        frameCollectionRef.current.framesSinceLastInference = 0;
-
-                        // Keep only the overlap frames for next batch
-                        frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
-
-                    } else if (initialCollectionComplete && framesSinceLastInference >= SUBSEQUENT_FRAMES) {
-                        // Subsequent collection complete - we need to send overlapping frames plus new frames
-                        // console.log(`[App] Subsequent collection complete: ${frames.length} frames total, ${framesSinceLastInference} new`);
-                        
-                        if (inferenceWorkerRef.current) {
-                            // Send overlap frames + new frames (total should be INITIAL_FRAMES)
-                            inferenceWorkerRef.current.postMessage({
-                                type: 'inferenceResult',
-                                frameBuffer: frames.slice(-INITIAL_FRAMES),
-                                timestamp: window.performance.now(),
-                                isInitialBatch: false
-                            });
-                        }
-
-                        // Reset counter and keep overlap
-                        frameCollectionRef.current.framesSinceLastInference = 0;
-
-                        // Keep only the overlap frames for next batch
-                        frameCollectionRef.current.frames = frames.slice(-OVERLAP_FRAMES);
+                        return;
+                    } else if (videoElement.paused) {
+                        console.log('[App] Video is paused, waiting to resume');
                     }
                 }
             }
         }, 33);
-    }, [isInitialized]); // Add isInitialized to dependency array
+    }, [isInitialized]); // isInitialized dependency is important
 
-
+    
     // Handler for initialization errors
     const handleInitializationError = (error: unknown) => {
         setStatusMessage({
@@ -382,6 +424,7 @@ const App: React.FC = () => {
             return;
         }
 
+        setBufferProgress(0);
         const file = event.target.files?.[0];
         if (!file) {
             return;
@@ -401,8 +444,15 @@ const App: React.FC = () => {
                 framesSinceLastInference: 0
             };
 
+            // Stop any existing monitoring
+            if (progressIntervalRef.current) {
+                clearInterval(progressIntervalRef.current);
+                progressIntervalRef.current = null;
+                console.log('[App] Cleared previous monitoring interval');
+            }
+
             // EXPLICITLY RESET THE WORKER FIRST and wait for confirmation
-            await new Promise<void>((resolve, reject) => {
+            await new Promise<void>((resolve) => {
                 const resetListener = (e: MessageEvent) => {
                     if (e.data.type === 'reset' && e.data.status === 'success') {
                         inferenceWorkerRef.current?.removeEventListener('message', resetListener);
@@ -423,12 +473,43 @@ const App: React.FC = () => {
                 }, 1000);
             });
 
-            // Add a callback for video completion
+            // Reset the video processor to clear any previous state
+            if (videoProcessorRef.current) {
+                await videoProcessorRef.current.resetVideoState();
+                console.log('[App] Video processor reset complete');
+            }
+
+            // Add a callback for video completion - IMPORTANT: Fix async callback issue
             videoProcessorRef.current.setOnVideoComplete(() => {
                 console.log('[App] Video processing complete');
                 setIsCapturing(false);
+
+                // Make sure to stop the monitoring loop explicitly
+                if (progressIntervalRef.current) {
+                    clearInterval(progressIntervalRef.current);
+                    progressIntervalRef.current = null;
+                }
+
+                // Don't use await in a non-async callback
+                // Instead, call reset synchronously
+                if (videoProcessorRef.current) {
+                    videoProcessorRef.current.reset().then(() => {
+                        console.log('[App] Video processor reset after completion');
+                    }).catch(error => {
+                        console.error('[App] Error resetting video processor:', error);
+                    });
+                }
+
+                // Reset frameCollection to be ready for a new video
+                frameCollectionRef.current = {
+                    frames: [],
+                    initialCollectionComplete: false,
+                    framesSinceLastInference: 0
+                };
+
+                // Update UI
                 setStatusMessage({
-                    message: 'Video processing complete. Data ready for export.',
+                    message: 'Video processing complete. Ready to process another video or export data.',
                     type: 'success'
                 });
             });
@@ -463,7 +544,6 @@ const App: React.FC = () => {
         // Reset the file input
         event.target.value = '';
     }, [resetData, startMonitoring]);
-
 
     // Start capture handler
     const handleStartCapture = useCallback(async () => {
@@ -566,10 +646,15 @@ const App: React.FC = () => {
 
         console.log('[App] STOP CAPTURE requested');
 
-        // Set state immediately to block UI interactions
-        setIsCapturing(false);
-
         try {
+            // Set state immediately to block UI interactions but don't reset bufferProgress yet
+            // This allows charts to remain visible after stopping
+            setIsCapturing(false);
+            setStatusMessage({
+                message: 'Stopping capture...',
+                type: 'info'
+            });
+
             // IMPORTANT: First stop any monitoring that could send more work to the worker
             if (progressIntervalRef.current) {
                 clearInterval(progressIntervalRef.current);
@@ -592,7 +677,7 @@ const App: React.FC = () => {
                 if (inferenceWorkerRef.current) {
                     inferenceWorkerRef.current.addEventListener('message', messageHandler);
 
-                    console.log('[App] Sending emergency stop command to inference worker');
+                    console.log('[App] Sending stop command to inference worker');
                     inferenceWorkerRef.current.postMessage({
                         type: 'stopCapture',
                         priority: 'emergency'
@@ -611,16 +696,22 @@ const App: React.FC = () => {
 
             // Stop video capture in parallel with worker stop
             if (videoProcessorRef.current) {
-                console.log('[App] Stopping video capture immediately');
+                console.log('[App] Stopping video capture');
                 await videoProcessorRef.current.stopCapture();
             }
 
             // Wait for worker to respond
             await stopWorkerPromise;
 
-            // Reset data and update UI
-            resetData();
-            setBufferProgress(0);
+            // IMPORTANT: Do NOT reset buffer progress to 0 here
+            // This allows the charts to remain visible after stopping capture
+            // bufferProgress will be reset when starting a new capture or loading a new video file
+
+            // IMPORTANT: Don't reset data, allowing export and continued chart viewing
+            // resetData() will be called when starting a new capture or loading new video
+
+            console.log('[App] Capture stopped successfully - data preserved');
+
             setStatusMessage({
                 message: 'Capture stopped. Data preserved for export.',
                 type: 'info'
@@ -634,7 +725,7 @@ const App: React.FC = () => {
                 type: 'error'
             });
         }
-    }, [resetData]);
+    }, []);
 
     const handleExport = useCallback(async () => {
         if (!inferenceWorkerRef.current) {
