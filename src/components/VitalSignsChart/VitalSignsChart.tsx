@@ -76,7 +76,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
                     display: true,
                     title: {
                         display: true,
-                        text: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal'
+                        text: type === 'bvp' ? 'Blood Volume Pulse Signal' : 'Respiratory Signal'
                     },
                     min: -1.05,
                     max: 1.05
@@ -119,7 +119,7 @@ const VitalSignsChart: React.FC<VitalSignsChartProps> = ({
             labels: displayData.map((_, i) => (i / fps).toFixed(1)),
             datasets: [
                 {
-                    label: type === 'bvp' ? 'Blood Volume Pulse' : 'Respiratory Signal',
+                    label: type === 'bvp' ? 'Blood Volume Pulse Signal' : 'Respiratory Signal',
                     data: displayData.map((value, index) => ({
                         x: index / fps, // Use exact time values rather than rounded strings
                         y: value

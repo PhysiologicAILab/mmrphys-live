@@ -799,7 +799,7 @@ const App: React.FC = () => {
 
                 <div className="charts-section">
                     <VitalSignsChart
-                        title="Blood Volume Pulse"
+                        title="Blood Volume Pulse Signal"
                         data={vitalSigns.bvpSignal}
                         filteredData={vitalSigns.filteredBvpSignal}
                         rate={vitalSigns.heartRate}
