@@ -12,24 +12,27 @@ const Footer: React.FC = () => {
                         </p>
                     </div>
                     <div>
-                        <h3 className="font-semibold mb-2">If you end up using MMRPhys model or this webapp for your research, please cite following papers:</h3>
+                        <h3 className="font-semibold mb-2">Citations:</h3>
                         <p className="text-sm text-gray-600">
-                            Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", arXiv:submit/6429247 [cs.CV] 11 May 2025<br/>
+                            If you utilize the MMRPhys model or this web application in your research, please cite the following papers: <br />
                         </p>
                         <p className="text-sm text-gray-600">
-                            Jitesh Joshi, Youngjun Cho, and Sos Agaian, “FactorizePhys: Effective Spatial-Temporal Attention in Remote Photo-plethysmography through Factorization of Voxel Embeddings”, NeurIPS, 2024.<br />
+                            [1] Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", arXiv:submit/6429247 [cs.CV] 11 May 2025.<br/>
                         </p>
                         <p className="text-sm text-gray-600">
-                            Jitesh Joshi and Youngjun Cho, “iBVP Dataset: RGB-thermal rPPG Dataset with High Resolution Signal Quality Labels”, MDPI Electronics, 13(7), 2024.<br />
+                            [2] Jitesh Joshi, Youngjun Cho, and Sos Agaian, “FactorizePhys: Effective Spatial-Temporal Attention in Remote Photo-plethysmography through Factorization of Voxel Embeddings”, NeurIPS, 2024.<br />
+                        </p>
+                        <p className="text-sm text-gray-600">
+                            [3] Jitesh Joshi and Youngjun Cho, “iBVP Dataset: RGB-thermal rPPG Dataset with High Resolution Signal Quality Labels”, MDPI Electronics, 13(7), 2024.<br />
                         </p>
                     </div>
                     <div>
                         <h3 className="font-semibold mb-2">Source Code:</h3>
                         <p className="text-sm text-gray-600">
-                            Source code for MMRPhys: <a href="https://github.com/PhysiologicAILab/MMRPhys" target="_blank" rel="noopener noreferrer">GitHub</a>.
+                            Source code for MMRPhys: <a href="https://github.com/PhysiologicAILab/MMRPhys" target="_blank" rel="noopener noreferrer">https://github.com/PhysiologicAILab/MMRPhys</a>.
                         </p>
                         <p className="text-sm text-gray-600">
-                            Source code for this webapp: <a href="https://github.com/physiologicailab/mmrphys-live" target="_blank" rel="noopener noreferrer">GitHub</a>.
+                            Source code for this webapp: <a href="https://github.com/physiologicailab/mmrphys-live" target="_blank" rel="noopener noreferrer">https://github.com/physiologicailab/mmrphys-live</a>.
                         </p>
                         
                     </div>
