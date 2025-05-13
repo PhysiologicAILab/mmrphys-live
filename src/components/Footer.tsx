@@ -17,7 +17,7 @@ const Footer: React.FC = () => {
                             If you utilize the MMRPhys model or this web application in your research, please cite the following papers: <br />
                         </p>
                         <p className="text-sm text-gray-600">
-                            [1] Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", arXiv:submit/6429247 [cs.CV] 11 May 2025.<br/>
+                            [1] Jitesh Joshi and Youngjun Cho, "Efficient and Robust Multidimensional Attention in Remote Physiological Sensing through Target Signal Constrained Factorization", 2025. arXiv: 2505.07013 [cs.CV]<br/>
                         </p>
                         <p className="text-sm text-gray-600">
                             [2] Jitesh Joshi, Youngjun Cho, and Sos Agaian, “FactorizePhys: Effective Spatial-Temporal Attention in Remote Photo-plethysmography through Factorization of Voxel Embeddings”, NeurIPS, 2024.<br />
@@ -29,10 +29,10 @@ const Footer: React.FC = () => {
                     <div>
                         <h3 className="font-semibold mb-2">Source Code:</h3>
                         <p className="text-sm text-gray-600">
-                            Source code for MMRPhys: <a href="https://github.com/PhysiologicAILab/MMRPhys" target="_blank" rel="noopener noreferrer">https://github.com/PhysiologicAILab/MMRPhys</a>.
+                            MMRPhys: <a href="https://github.com/PhysiologicAILab/MMRPhys" target="_blank" rel="noopener noreferrer">https://github.com/PhysiologicAILab/MMRPhys</a>.
                         </p>
                         <p className="text-sm text-gray-600">
-                            Source code for this webapp: <a href="https://github.com/physiologicailab/mmrphys-live" target="_blank" rel="noopener noreferrer">https://github.com/physiologicailab/mmrphys-live</a>.
+                            MMRPhys Webapp: <a href="https://github.com/physiologicailab/mmrphys-live" target="_blank" rel="noopener noreferrer">https://github.com/physiologicailab/mmrphys-live</a>.
                         </p>
                         
                     </div>
