@@ -106,7 +106,7 @@ export class SignalProcessor {
     public startCapture(): void {
         console.log('[SignalProcessor] Starting capture with clean state');
         // Reset all state for a new capture
-        this.reset();
+        // this.reset();
         // Start capturing signals
         this.isCapturing = true;
         // Initialize session timestamp
@@ -180,6 +180,13 @@ export class SignalProcessor {
             console.log('[SignalProcessor] Skipping signal processing because capture is inactive');
             return this.getEmptyResults();
         }
+
+        // Defensive check: ensure buffers are properly initialized
+        if (!this.bvpBuffer || !this.respBuffer) {
+            console.warn('[SignalProcessor] Buffers not initialized, resetting...');
+            this.reset();
+            this.isCapturing = true; // Restore capture state after reset
+        }        
 
         // Process signals differently based on whether it's the first processing or a subsequent one
         if (!this.isInitialProcessingDone) {
@@ -589,25 +596,31 @@ export class SignalProcessor {
      */
     // Modified reset method to also reset filter states
     reset(): void {
+        console.log('[SignalProcessor] Resetting all buffers and state');
+
         // Reset all buffers and state variables
         this.bvpBuffer = this.createBuffer();
         this.respBuffer = this.createBuffer();
         this.timestamps = [];
-        this.isCapturing = false;
-        this.isInitialProcessingDone = false;
-        this.sessionStartTime = 0;
         this.bvpRateHistory = [];
         this.respRateHistory = [];
         this.displayHeartRate = 0;
         this.displayRespRate = 0;
+        this.isInitialProcessingDone = false;
+        this.sessionStartTime = 0;
+        this.BVP_Mean = 0;
+        this.RESP_Mean = 0;
+        this._lastInferenceTime = 0;
 
-        // Reinitialize filters with fresh states
         this.bvpFilter = new ButterworthFilter(
             ButterworthFilter.designBandpass("bvp", this.fps)
         );
         this.respFilter = new ButterworthFilter(
             ButterworthFilter.designBandpass("resp", this.fps)
         );
+
+        // REMOVE: Don't set isCapturing = false here - let the caller control capture state
+        // this.isCapturing = false; // Remove this line
 
         console.log('[SignalProcessor] All buffers and state reset');
     }

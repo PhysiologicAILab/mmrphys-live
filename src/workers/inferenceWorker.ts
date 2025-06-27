@@ -544,34 +544,35 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         switch (e.data.type) {
-            case 'reset':
-                try {
-                    // Reset the signal processor
-                    if (worker.signalProcessor) {
-                        worker.signalProcessor.reset(); // This will clear bvpRateHistory and respRateHistory
-                    }
-
-                    self.postMessage({
-                        type: 'reset',
-                        status: 'success'
-                    });
-
-                    console.log('[InferenceWorker] Signal processor and worker state reset successfully');
-                } catch (error) {
-                    self.postMessage({
-                        type: 'reset',
-                        status: 'error',
-                        error: error instanceof Error ? error.message : 'Reset failed'
-                    });
-                }
-                break;
             case 'init':
                 await worker.initialize();
                 break;
             case 'startCapture':
-                worker.startCapture();
-                self.postMessage({ type: 'startCapture', status: 'success' });
-                break;
+                try {
+                    console.log('[InferenceWorker] Starting capture');
+
+                    if (worker.signalProcessor) {
+                        // Ensure clean state before starting (defensive programming)
+                        worker.signalProcessor.reset();
+                        worker.signalProcessor.startCapture();
+                    }
+
+                    if (worker.signalProcessor) {
+                        worker.signalProcessor.isCapturing = true;
+                    }
+
+                    self.postMessage({
+                        type: 'startCapture',
+                        status: 'success'
+                    });
+                } catch (error) {
+                    self.postMessage({
+                        type: 'startCapture',
+                        status: 'error',
+                        error: error instanceof Error ? error.message : 'Failed to start capture'
+                    });
+                }
+                    break;
             case 'inferenceResult':
                 await worker.runInference(e.data.frameBuffer);
                 break;
