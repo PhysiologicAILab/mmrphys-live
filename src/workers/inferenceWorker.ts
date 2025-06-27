@@ -544,6 +544,27 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         switch (e.data.type) {
+            case 'reset':
+                try {
+                    // Reset the signal processor
+                    if (worker.signalProcessor) {
+                        worker.signalProcessor.reset(); // This will clear bvpRateHistory and respRateHistory
+                    }
+
+                    self.postMessage({
+                        type: 'reset',
+                        status: 'success'
+                    });
+
+                    console.log('[InferenceWorker] Signal processor and worker state reset successfully');
+                } catch (error) {
+                    self.postMessage({
+                        type: 'reset',
+                        status: 'error',
+                        error: error instanceof Error ? error.message : 'Reset failed'
+                    });
+                }
+                break;
             case 'init':
                 await worker.initialize();
                 break;
