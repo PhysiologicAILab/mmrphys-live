@@ -22,9 +22,12 @@ export class SignalProcessor {
     public readonly INITIAL_FRAMES = 181;
     public readonly SUBSEQUENT_FRAMES = 121;
     public readonly OVERLAP_FRAMES = this.INITIAL_FRAMES - this.SUBSEQUENT_FRAMES;
-    private readonly MIN_SECONDS_FOR_METRICS = 10; // Start computing metrics when we have at least this much data
+    private readonly MIN_SECONDS_FOR_METRICS = 12; // Start computing metrics when we have at least this much data
     private readonly METRICS_WINDOW_SECONDS = 30;  // Use 30 seconds for metrics when available
 
+    // Flag to track if we've reached the minimum data threshold
+    private hasReachedMinimumData: boolean = false;
+    
     // Constants for display and buffer management
     private readonly DISPLAY_SAMPLES_BVP = 300;  // 300 samples for BVP
     private readonly DISPLAY_SAMPLES_RESP = 450; // 450 samples for Resp
@@ -186,7 +189,7 @@ export class SignalProcessor {
             console.warn('[SignalProcessor] Buffers not initialized, resetting...');
             this.reset();
             this.isCapturing = true; // Restore capture state after reset
-        }        
+        }
 
         // Process signals differently based on whether it's the first processing or a subsequent one
         if (!this.isInitialProcessingDone) {
@@ -222,44 +225,57 @@ export class SignalProcessor {
         // Maintain buffer size with growth for export (max MAX_BUFFER samples as per requirements)
         this.maintainBufferSize();
 
+        // Check if we have minimum data for the FIRST TIME
+        if (!this.hasReachedMinimumData) {
+            const hasMinimumData =
+                this.bvpBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS &&
+                this.respBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS;
+
+            if (hasMinimumData) {
+                this.hasReachedMinimumData = true;
+                console.log(`[SignalProcessor] Minimum data threshold reached: ${this.MIN_SECONDS_FOR_METRICS} seconds`);
+            }
+        }
+
         // Default metrics (used if we don't have enough data)
         let bvpMetrics: SignalMetrics = {
             rate: 0,
-            quality: { quality: 'poor', snr: 0}
+            quality: { quality: 'poor', snr: 0 }
         };
 
         let respMetrics: SignalMetrics = {
             rate: 0,
-            quality: { quality: 'poor', snr: 0}
+            quality: { quality: 'poor', snr: 0 }
         };
 
-        // Check if we have minimum data for metrics computation
-        const hasMinimumData =
-            this.bvpBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS &&
-            this.respBuffer.raw.length >= this.fps * this.MIN_SECONDS_FOR_METRICS;
-
-        if (hasMinimumData) {
-            // For BVP metrics, use maximum of METRICS_WINDOW_SECONDS samples
+        // Process metrics and update rates if we have minimum data OR if we've reached the threshold before
+        if (this.hasReachedMinimumData) {
+            // Calculate sliding window size - use all available data up to METRICS_WINDOW_SECONDS
             const bvpWindowSamples = Math.min(
                 this.fps * this.METRICS_WINDOW_SECONDS,
                 this.bvpBuffer.raw.length
             );
 
-            // For Resp metrics, use maximum of METRICS_WINDOW_SECONDS samples
             const respWindowSamples = Math.min(
                 this.fps * this.METRICS_WINDOW_SECONDS,
                 this.respBuffer.raw.length
             );
 
-            // Process signals for metrics using the appropriate window sizes
+            console.log(`[SignalProcessor] Processing with sliding window - BVP: ${bvpWindowSamples} samples, RESP: ${respWindowSamples} samples`);
+
+            // Process signals for metrics using the sliding window
             bvpMetrics = this.processSignal(this.bvpBuffer, 'bvp', timestamp, bvpWindowSamples);
             respMetrics = this.processSignal(this.respBuffer, 'resp', timestamp, respWindowSamples);
 
-            // Calculate median rates for display
+            // Update display rates - happens every time after minimum threshold is reached
             this.updateDisplayRates();
+
+            console.log(`[SignalProcessor] Metrics computed - Heart: ${bvpMetrics.rate.toFixed(1)} bpm, Resp: ${respMetrics.rate.toFixed(1)} brpm`);
+        } else {
+            console.log(`[SignalProcessor] Insufficient data for metrics: BVP=${this.bvpBuffer.raw.length}/${this.fps * this.MIN_SECONDS_FOR_METRICS}, RESP=${this.respBuffer.raw.length}/${this.fps * this.MIN_SECONDS_FOR_METRICS}`);
         }
 
-        // Prepare display data (for plots) - all filtering happens on-demand now
+        // Prepare display data - available from first inference
         const displayData = this.prepareDisplayData();
 
         return {
@@ -418,20 +434,22 @@ export class SignalProcessor {
     }
 
     /**
-     * Process signal for metrics with on-demand filtering
+     * Process signal for metrics with sliding window approach
      */
     private processSignal(buffer: SignalBuffer, type: 'bvp' | 'resp', timestamp: string, windowSamples: number): SignalMetrics {
         // Exit early if not capturing
         if (!this.isCapturing) {
             return {
                 rate: 0,
-                quality: { quality: 'poor', snr: 0}
+                quality: { quality: 'poor', snr: 0 }
             };
         }
 
         try {
-            // Get the analysis window with specified number of samples from raw data
+            // Get the sliding window - always use the most recent windowSamples
             const rawWindow = buffer.raw.slice(-windowSamples);
+
+            console.log(`[SignalProcessor] Processing ${type} signal with ${rawWindow.length} samples (requested: ${windowSamples})`);
 
             // Generate filtered data on-demand instead of accessing stored filtered data
             const signalType = type === 'bvp' ? 'heart' : 'resp';
@@ -455,7 +473,8 @@ export class SignalProcessor {
                 (metrics.rate >= 40 && metrics.rate <= 180) :
                 (metrics.rate >= 6 && metrics.rate <= 32);
 
-            // Only add to history if rate is valid
+            // Always add to history if rate is valid and we have minimum data
+            // This ensures continuous updates after the initial threshold
             if (metrics.rate > 0 && isFinite(metrics.rate) && isPhysiologicallyValid) {
                 if (type === 'bvp') {
                     console.log(`[SignalProcessor] Adding heart rate to history: ${metrics.rate.toFixed(1)} bpm`);
@@ -499,13 +518,14 @@ export class SignalProcessor {
             console.error(`Error calculating ${type} metrics:`, error);
             return {
                 rate: 0,
-                quality: { quality: 'poor', snr: 0.01}
+                quality: { quality: 'poor', snr: 0.01 }
             };
         }
     }
 
-    // Prepare data for display (charts) - process raw signals on demand
+    // Prepare data for display (charts) - available from first inference
     private prepareDisplayData(): { bvp: number[], resp: number[], filteredBvp: number[], filteredResp: number[] } {
+        // Show display data as soon as we have any signal data
         if (!this.isCapturing || this.bvpBuffer.raw.length === 0) {
             return { bvp: [], resp: [], filteredBvp: [], filteredResp: [] };
         }
@@ -594,7 +614,6 @@ export class SignalProcessor {
     /**
      * Reset all buffers and state when starting a new capture session
      */
-    // Modified reset method to also reset filter states
     reset(): void {
         console.log('[SignalProcessor] Resetting all buffers and state');
 
@@ -611,6 +630,9 @@ export class SignalProcessor {
         this.BVP_Mean = 0;
         this.RESP_Mean = 0;
         this._lastInferenceTime = 0;
+
+        // Reset the minimum data threshold flag
+        this.hasReachedMinimumData = false;
 
         this.bvpFilter = new ButterworthFilter(
             ButterworthFilter.designBandpass("bvp", this.fps)
